@@ -5,9 +5,52 @@ const login_decrypt = @import("login_decrypt.zig");
 
 var debug_enabled: bool = false;
 
+const Channel = enum {
+    release,
+    nightly,
+    dev,
+    esr,
+
+    fn profileSuffix(self: Channel) []const u8 {
+        return switch (self) {
+            .release => "default-release",
+            .nightly => "default-nightly",
+            .dev => "dev-edition-default",
+            .esr => "default-esr",
+        };
+    }
+
+    fn displayName(self: Channel) []const u8 {
+        return switch (self) {
+            .release => "Release",
+            .nightly => "Nightly",
+            .dev => "Developer Edition",
+            .esr => "ESR",
+        };
+    }
+
+    fn fromString(s: []const u8) ?Channel {
+        const map = .{
+            .{ "release", Channel.release },
+            .{ "nightly", Channel.nightly },
+            .{ "dev", Channel.dev },
+            .{ "esr", Channel.esr },
+        };
+        inline for (map) |pair| {
+            if (std.mem.eql(u8, s, pair[0])) return pair[1];
+        }
+        return null;
+    }
+};
+
+const all_channels = [_]Channel{ .release, .nightly, .dev, .esr };
+// Also try legacy "default" suffix (older Firefox installs)
+const legacy_suffix = "default";
+
 const Cli = struct {
     host: ?[]const u8 = null,
     profile: ?[]const u8 = null,
+    channel: ?Channel = null,
     show_help: bool = false,
 };
 
@@ -38,7 +81,7 @@ fn run(allocator: std.mem.Allocator) !void {
         return error.MissingHost;
     }
 
-    const profile_path = try resolveProfilePath(allocator, cli.profile);
+    const profile_path = try resolveProfilePath(allocator, cli.profile, cli.channel);
     defer allocator.free(profile_path);
     debugPrint("Using profile: {s}\n", .{profile_path});
 
@@ -69,6 +112,10 @@ fn parseArgs(allocator: std.mem.Allocator) !Cli {
             i += 1;
             if (i >= args.len) return error.MissingHost;
             cli.host = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--channel")) {
+            i += 1;
+            if (i >= args.len) return error.MissingChannel;
+            cli.channel = Channel.fromString(args[i]) orelse return error.InvalidChannel;
         } else {
             return error.UnknownArg;
         }
@@ -90,17 +137,21 @@ fn printUsage() !void {
     var buffer: [4096]u8 = undefined;
     var out = std.fs.File.stdout().writer(&buffer);
     try out.interface.writeAll(
-        "Usage: ffpw --host <hostname> [--profile <path>]\n" ++
+        "Usage: ffpw --host <hostname> [--channel <ch>] [--profile <path>]\n" ++
         "\n" ++
         "Options:\n" ++
-        "  --host <hostname>   Substring match for login hostname\n" ++
-        "  --profile <path>    Firefox profile directory (defaults to Nightly)\n" ++
-        "  -h, --help          Show this help\n",
+        "  --host <hostname>        Substring match for login hostname\n" ++
+        "  --channel <ch>           Firefox channel: release, nightly, dev, esr\n" ++
+        "  --profile <path>         Firefox profile directory (overrides --channel)\n" ++
+        "  -h, --help               Show this help\n" ++
+        "\n" ++
+        "If --channel and --profile are both omitted, auto-detects the profile.\n" ++
+        "If multiple profiles exist, you'll be asked to specify one.\n",
     );
     try out.interface.flush();
 }
 
-fn resolveProfilePath(allocator: std.mem.Allocator, override: ?[]const u8) ![]u8 {
+fn resolveProfilePath(allocator: std.mem.Allocator, override: ?[]const u8, channel: ?Channel) ![]u8 {
     if (override) |path| {
         return allocator.dupe(u8, path);
     }
@@ -117,17 +168,62 @@ fn resolveProfilePath(allocator: std.mem.Allocator, override: ?[]const u8) ![]u8
     const base_path = try std.fs.path.join(allocator, &.{ home, base });
     defer allocator.free(base_path);
 
-    var dir = try std.fs.openDirAbsolute(base_path, .{ .iterate = true });
+    var dir = std.fs.openDirAbsolute(base_path, .{ .iterate = true }) catch
+        return error.ProfileNotFound;
     defer dir.close();
+
+    // Collect all matching profiles.
+    const max_profiles = 8;
+    var found: [max_profiles]struct { path: []u8, channel_name: []const u8 } = undefined;
+    var found_count: usize = 0;
 
     var it = dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind != .directory) continue;
-        if (std.mem.indexOf(u8, entry.name, "default-nightly") == null) continue;
-        return std.fs.path.join(allocator, &.{ base_path, entry.name });
+
+        const match = blk: {
+            if (channel) |ch| {
+                // User specified a channel — only look for that suffix.
+                if (std.mem.endsWith(u8, entry.name, ch.profileSuffix()))
+                    break :blk ch.displayName();
+            } else {
+                // Auto-detect: try all known suffixes.
+                for (all_channels) |ch| {
+                    if (std.mem.endsWith(u8, entry.name, ch.profileSuffix()))
+                        break :blk ch.displayName();
+                }
+                if (std.mem.endsWith(u8, entry.name, legacy_suffix))
+                    break :blk @as([]const u8, "Default (legacy)");
+            }
+            break :blk @as(?[]const u8, null);
+        };
+
+        if (match) |channel_name| {
+            if (found_count < max_profiles) {
+                found[found_count] = .{
+                    .path = try std.fs.path.join(allocator, &.{ base_path, entry.name }),
+                    .channel_name = channel_name,
+                };
+                found_count += 1;
+            }
+        }
     }
 
-    return error.NightlyProfileNotFound;
+    if (found_count == 0) return error.ProfileNotFound;
+
+    if (found_count == 1) return found[0].path;
+
+    // Multiple profiles found — print them and ask user to disambiguate.
+    var buffer: [4096]u8 = undefined;
+    var err_writer = std.fs.File.stderr().writer(&buffer);
+    try err_writer.interface.writeAll("Multiple Firefox profiles found:\n");
+    for (found[0..found_count]) |f| {
+        try err_writer.interface.print("  [{s}] {s}\n", .{ f.channel_name, f.path });
+        allocator.free(f.path);
+    }
+    try err_writer.interface.writeAll("Use --channel <release|nightly|dev|esr> or --profile <path> to select one.\n");
+    try err_writer.interface.flush();
+    return error.AmbiguousProfile;
 }
 
 fn ensureProfileFiles(profile_path: []const u8) !void {
@@ -256,7 +352,10 @@ fn reportError(err: anyerror) !void {
         error.InvalidLoginsArray => try err_writer.interface.writeAll("logins.json logins is not an array.\n"),
         error.MissingKey4 => try err_writer.interface.writeAll("Missing key4.db in profile directory.\n"),
         error.MissingField => try err_writer.interface.writeAll("logins.json missing expected fields.\n"),
-        error.NightlyProfileNotFound => try err_writer.interface.writeAll("Nightly profile not found. Use --profile.\n"),
+        error.ProfileNotFound => try err_writer.interface.writeAll("No Firefox profile found. Use --profile <path>.\n"),
+        error.AmbiguousProfile => {}, // already printed details in resolveProfilePath
+        error.MissingChannel => try err_writer.interface.writeAll("Missing value after --channel.\n"),
+        error.InvalidChannel => try err_writer.interface.writeAll("Invalid channel. Use: release, nightly, dev, esr.\n"),
         error.MissingHome => try err_writer.interface.writeAll("HOME is not set.\n"),
         error.UnsupportedOs => try err_writer.interface.writeAll("Unsupported OS for automatic profile discovery.\n"),
         error.Key4OpenFailed => try err_writer.interface.writeAll("Failed to open key4.db.\n"),

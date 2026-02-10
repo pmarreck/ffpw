@@ -1,18 +1,23 @@
 # ffpw
 
-Read-only Firefox Nightly password lookup CLI.
+Read-only Firefox password lookup CLI. Supports Release, Nightly, Developer Edition, and ESR.
 
 ## Usage
 
 ```
-ffpw --host <hostname> [--profile <path>]
+ffpw --host <hostname> [--channel <ch>] [--profile <path>]
 ```
+
+If no `--channel` or `--profile` is given, auto-detects the Firefox profile.
+If multiple profiles exist, you'll be prompted to specify one.
 
 Examples:
 
 ```
 ffpw --host example.com
-ffpw --host example.com --profile ~/Library/Application\ Support/Firefox/Profiles/xyz.default-nightly
+ffpw --host example.com --channel nightly
+ffpw --host example.com --channel release
+ffpw --host example.com --profile ~/Library/Application\ Support/Firefox/Profiles/xyz.default-release
 ```
 
 ## Development
@@ -36,12 +41,7 @@ Run tests:
 bin/test/ffpw_test
 ```
 
-## Portable Bundle (macOS)
+## Architecture
 
-macOS does not support fully static linking, and NSS is not a system library.
-To run `ffpw` without `nix develop`, build a relocatable bundle (binary + dylibs):
-
-```
-./bin/ffpw-dist
-./dist/bin/ffpw --host example.com
-```
+Pure Zig implementation — no NSS/NSPR dependency. The binary links only against
+`/usr/lib/libSystem.B.dylib` on macOS. Just `zig build` produces a fully portable executable.
