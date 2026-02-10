@@ -47,8 +47,11 @@ const all_channels = [_]Channel{ .release, .nightly, .dev, .esr };
 // Also try legacy "default" suffix (older Firefox installs)
 const legacy_suffix = "default";
 
+const max_filters = 16;
+
 const Cli = struct {
-    host: ?[]const u8 = null,
+    filters: [max_filters][]const u8 = undefined,
+    filter_count: usize = 0,
     profile: ?[]const u8 = null,
     channel: ?Channel = null,
     show_help: bool = false,
@@ -76,9 +79,17 @@ fn run(allocator: std.mem.Allocator) !void {
         return;
     }
 
-    if (cli.host == null) {
+    if (cli.filter_count == 0) {
         try printUsage();
-        return error.MissingHost;
+        return error.MissingFilter;
+    }
+
+    // Resolve channel from env var if not set on CLI.
+    if (cli.channel == null) {
+        if (std.process.getEnvVarOwned(allocator, "FFPW_CHANNEL") catch null) |env_ch| {
+            defer allocator.free(env_ch);
+            cli.channel = Channel.fromString(env_ch);
+        }
     }
 
     const profile_path = try resolveProfilePath(allocator, cli.profile, cli.channel);
@@ -91,7 +102,7 @@ fn run(allocator: std.mem.Allocator) !void {
     const key_store = try key4.KeyStore.open(allocator, profile_path, "");
     debugPrint("Master key extracted successfully\n", .{});
 
-    try printMatches(allocator, profile_path, cli.host.?, key_store.master_key);
+    try printMatches(allocator, profile_path, cli.filters[0..cli.filter_count], key_store.master_key);
 }
 
 fn parseArgs(allocator: std.mem.Allocator) !Cli {
@@ -110,14 +121,20 @@ fn parseArgs(allocator: std.mem.Allocator) !Cli {
             cli.profile = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "--host")) {
             i += 1;
-            if (i >= args.len) return error.MissingHost;
-            cli.host = try allocator.dupe(u8, args[i]);
+            if (i >= args.len) return error.MissingFilter;
+            if (cli.filter_count >= max_filters) return error.TooManyFilters;
+            cli.filters[cli.filter_count] = try allocator.dupe(u8, args[i]);
+            cli.filter_count += 1;
         } else if (std.mem.eql(u8, arg, "--channel")) {
             i += 1;
             if (i >= args.len) return error.MissingChannel;
             cli.channel = Channel.fromString(args[i]) orelse return error.InvalidChannel;
-        } else {
+        } else if (std.mem.startsWith(u8, arg, "-")) {
             return error.UnknownArg;
+        } else {
+            if (cli.filter_count >= max_filters) return error.TooManyFilters;
+            cli.filters[cli.filter_count] = try allocator.dupe(u8, args[i]);
+            cli.filter_count += 1;
         }
     }
 
@@ -125,8 +142,8 @@ fn parseArgs(allocator: std.mem.Allocator) !Cli {
 }
 
 fn cliDeinit(allocator: std.mem.Allocator, cli: *Cli) void {
-    if (cli.host) |host| {
-        allocator.free(host);
+    for (cli.filters[0..cli.filter_count]) |f| {
+        allocator.free(f);
     }
     if (cli.profile) |profile| {
         allocator.free(profile);
@@ -137,16 +154,23 @@ fn printUsage() !void {
     var buffer: [4096]u8 = undefined;
     var out = std.fs.File.stdout().writer(&buffer);
     try out.interface.writeAll(
-        "Usage: ffpw --host <hostname> [--channel <ch>] [--profile <path>]\n" ++
+        "Usage: ffpw <filter> [<filter> ...] [--channel <ch>] [--profile <path>]\n" ++
+        "\n" ++
+        "Filters are substring-matched against hostname and username (AND'd).\n" ++
         "\n" ++
         "Options:\n" ++
-        "  --host <hostname>        Substring match for login hostname\n" ++
+        "  --host <filter>          Alias for a positional filter\n" ++
         "  --channel <ch>           Firefox channel: release, nightly, dev, esr\n" ++
         "  --profile <path>         Firefox profile directory (overrides --channel)\n" ++
         "  -h, --help               Show this help\n" ++
         "\n" ++
-        "If --channel and --profile are both omitted, auto-detects the profile.\n" ++
-        "If multiple profiles exist, you'll be asked to specify one.\n",
+        "Environment:\n" ++
+        "  FFPW_CHANNEL             Default channel (e.g. nightly, release)\n" ++
+        "\n" ++
+        "Examples:\n" ++
+        "  ffpw google              All logins with 'google' in hostname or username\n" ++
+        "  ffpw google admin        Logins matching both 'google' AND 'admin'\n" ++
+        "  ffpw github --channel nightly\n",
     );
     try out.interface.flush();
 }
@@ -245,7 +269,7 @@ fn fileExists(path: []const u8) bool {
 fn printMatches(
     allocator: std.mem.Allocator,
     profile_path: []const u8,
-    host: []const u8,
+    filters: []const []const u8,
     master_key: [32]u8,
 ) !void {
     const logins_path = try std.fs.path.join(allocator, &.{ profile_path, "logins.json" });
@@ -262,7 +286,6 @@ fn printMatches(
     var buffer: [4096]u8 = undefined;
     var out = std.fs.File.stdout().writer(&buffer);
     var matched: usize = 0;
-    var decrypted: usize = 0;
     var decrypt_failures: usize = 0;
 
     const root = parsed.value;
@@ -302,36 +325,42 @@ fn printMatches(
             else => continue,
         };
 
-        if (!hostnameMatches(hostname, host)) continue;
-        matched += 1;
+        // Decrypt username (needed for filter matching).
         const username = login_decrypt.decryptLoginField(allocator, encrypted_username, master_key) catch |err| {
-            decrypt_failures += 1;
             debugPrint("Decrypt username failed for {s}: {s}\n", .{ hostname, @errorName(err) });
+            decrypt_failures += 1;
             continue;
         };
         defer allocator.free(username);
+
+        if (!entryMatches(hostname, username, filters)) continue;
+        matched += 1;
+
         const password = login_decrypt.decryptLoginField(allocator, encrypted_password, master_key) catch |err| {
-            decrypt_failures += 1;
             debugPrint("Decrypt password failed for {s}: {s}\n", .{ hostname, @errorName(err) });
+            decrypt_failures += 1;
             continue;
         };
         defer allocator.free(password);
 
-        decrypted += 1;
         try out.interface.print("{s}\n\tusername: {s}\n\tpassword: {s}\n\n", .{ hostname, username, password });
     }
 
     if (matched == 0) {
-        try out.interface.print("No matches for host substring: {s}\n", .{host});
-    } else if (decrypted == 0 and decrypt_failures > 0) {
-        return error.DecryptFailed;
+        try out.interface.writeAll("No matching logins found.\n");
     }
-    debugPrint("Matched: {d}, decrypted: {d}, failures: {d}\n", .{ matched, decrypted, decrypt_failures });
+    debugPrint("Matched: {d}, decrypt failures: {d}\n", .{ matched, decrypt_failures });
     try out.interface.flush();
 }
 
-fn hostnameMatches(hostname: []const u8, needle: []const u8) bool {
-    return std.mem.indexOf(u8, hostname, needle) != null;
+/// Returns true if every filter term appears as a substring in either hostname or username.
+fn entryMatches(hostname: []const u8, username: []const u8, filters: []const []const u8) bool {
+    for (filters) |needle| {
+        const in_host = std.mem.indexOf(u8, hostname, needle) != null;
+        const in_user = std.mem.indexOf(u8, username, needle) != null;
+        if (!in_host and !in_user) return false;
+    }
+    return true;
 }
 
 fn debugPrint(comptime fmt: []const u8, args: anytype) void {
@@ -343,7 +372,8 @@ fn reportError(err: anyerror) !void {
     var buffer: [4096]u8 = undefined;
     var err_writer = std.fs.File.stderr().writer(&buffer);
     switch (err) {
-        error.MissingHost => try err_writer.interface.writeAll("Missing required --host argument.\n"),
+        error.MissingFilter => try err_writer.interface.writeAll("No search filter provided. See --help.\n"),
+        error.TooManyFilters => try err_writer.interface.writeAll("Too many filter terms.\n"),
         error.MissingProfilePath => try err_writer.interface.writeAll("Missing path after --profile.\n"),
         error.UnknownArg => try err_writer.interface.writeAll("Unknown argument. Use --help for usage.\n"),
         error.MissingLogins => try err_writer.interface.writeAll("Missing logins.json in profile directory.\n"),

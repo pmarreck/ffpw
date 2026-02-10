@@ -5,20 +5,28 @@ Read-only Firefox password lookup CLI. Supports Release, Nightly, Developer Edit
 ## Usage
 
 ```
-ffpw --host <hostname> [--channel <ch>] [--profile <path>]
+ffpw <filter> [<filter> ...] [--channel <ch>] [--profile <path>]
 ```
 
-If no `--channel` or `--profile` is given, auto-detects the Firefox profile.
-If multiple profiles exist, you'll be prompted to specify one.
+Each filter is substring-matched against hostname and username (AND'd together).
 
 Examples:
 
 ```
-ffpw --host example.com
-ffpw --host example.com --channel nightly
-ffpw --host example.com --channel release
-ffpw --host example.com --profile ~/Library/Application\ Support/Firefox/Profiles/xyz.default-release
+ffpw google                  # all logins with "google" in hostname or username
+ffpw google admin            # logins matching both "google" AND "admin"
+ffpw github --channel nightly
 ```
+
+Set `FFPW_CHANNEL` to avoid typing `--channel` every time:
+
+```
+export FFPW_CHANNEL=nightly
+ffpw google
+```
+
+Auto-detects profile if only one exists. If multiple profiles are found,
+you'll be prompted to specify `--channel` or `--profile`.
 
 ## Development
 
