@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+
+set -u
+
+fails=0
+tests=0
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PATH="$root_dir/bin:$PATH"
+
+report_result() {
+	local ok="$1"
+	local message="$2"
+	if [[ "$ok" -eq 1 ]]; then
+		echo "✓ $message"
+	else
+		echo "✗ $message" >&2
+		((fails++))
+	fi
+}
+
+# Test 1: --help prints usage
+((tests++))
+echo "Testing: --help prints usage..."
+help_output=$(ffpw --help 2>/dev/null)
+help_status=$?
+if [[ $help_status -eq 0 && "$help_output" == *"Usage:"* ]]; then
+	report_result 1 "--help prints usage"
+else
+	report_result 0 "--help did not print usage"
+	echo "  status: $help_status" >&2
+	echo "  output: $help_output" >&2
+fi
+
+# Test 2: missing key4.db returns error
+((tests++))
+echo "Testing: missing key4.db returns error..."
+work_dir=$(mktemp -d --tmpdir ffpw_test.XXXXXX)
+profile_dir="$work_dir/profile"
+mkdir -p "$profile_dir"
+cat <<'JSON' > "$profile_dir/logins.json"
+{"logins": []}
+JSON
+error_output=$(ffpw --profile "$profile_dir" --host example.com 2>&1 >/dev/null)
+error_status=$?
+if [[ $error_status -ne 0 && "$error_output" == *"key4.db"* ]]; then
+	report_result 1 "missing key4.db detected"
+else
+	report_result 0 "missing key4.db was not detected"
+	echo "  status: $error_status" >&2
+	echo "  error: $error_output" >&2
+fi
+
+# Test 3: missing logins.json returns error
+((tests++))
+echo "Testing: missing logins.json returns error..."
+rm -f "$profile_dir/logins.json"
+error_output=$(ffpw --profile "$profile_dir" --host example.com 2>&1 >/dev/null)
+error_status=$?
+if [[ $error_status -ne 0 && "$error_output" == *"logins.json"* ]]; then
+	report_result 1 "missing logins.json detected"
+else
+	report_result 0 "missing logins.json was not detected"
+	echo "  status: $error_status" >&2
+	echo "  error: $error_output" >&2
+fi
+
+rm -rf "$work_dir"
+
+if [[ $fails -eq 0 ]]; then
+	echo "All $tests tests passed"
+else
+	echo "$fails of $tests tests failed" >&2
+fi
+
+exit "$fails"
