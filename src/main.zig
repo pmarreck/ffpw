@@ -57,59 +57,62 @@ const Cli = struct {
     show_help: bool = false,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    run(allocator) catch |err| {
-        try reportError(err);
+    run(io, allocator, init.environ_map, args) catch |err| {
+        reportError(io, err) catch {};
         std.process.exit(1);
     };
 }
 
-fn run(allocator: std.mem.Allocator) !void {
-    debug_enabled = std.process.hasNonEmptyEnvVar(allocator, "FFPW_DEBUG") catch false;
+fn run(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    env: *std.process.Environ.Map,
+    args: []const []const u8,
+) !void {
+    if (env.get("FFPW_DEBUG")) |dbg| {
+        if (dbg.len > 0) debug_enabled = true;
+    }
 
-    var cli = try parseArgs(allocator);
+    var cli = try parseArgs(allocator, args);
     defer cliDeinit(allocator, &cli);
 
     if (cli.show_help) {
-        try printUsage();
+        try printUsage(io);
         return;
     }
 
     if (cli.filter_count == 0) {
-        try printUsage();
+        try printUsage(io);
         return error.MissingFilter;
     }
 
     // Resolve channel from env var if not set on CLI.
     if (cli.channel == null) {
-        if (std.process.getEnvVarOwned(allocator, "FFPW_CHANNEL") catch null) |env_ch| {
-            defer allocator.free(env_ch);
+        if (env.get("FFPW_CHANNEL")) |env_ch| {
             cli.channel = Channel.fromString(env_ch);
         }
     }
 
-    const profile_path = try resolveProfilePath(allocator, cli.profile, cli.channel);
+    const profile_path = try resolveProfilePath(io, allocator, env, cli.profile, cli.channel);
     defer allocator.free(profile_path);
     debugPrint("Using profile: {s}\n", .{profile_path});
 
-    try ensureProfileFiles(profile_path);
+    try ensureProfileFiles(io, profile_path);
 
     // Open key4.db and extract the master key (verifies master password).
     const key_store = try key4.KeyStore.open(allocator, profile_path, "");
     debugPrint("Master key extracted successfully\n", .{});
 
-    try printMatches(allocator, profile_path, cli.filters[0..cli.filter_count], key_store.master_key);
+    try printMatches(io, allocator, profile_path, cli.filters[0..cli.filter_count], key_store.master_key);
 }
 
-fn parseArgs(allocator: std.mem.Allocator) !Cli {
+fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Cli {
     var cli = Cli{};
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -150,9 +153,9 @@ fn cliDeinit(allocator: std.mem.Allocator, cli: *Cli) void {
     }
 }
 
-fn printUsage() !void {
+fn printUsage(io: std.Io) !void {
     var buffer: [4096]u8 = undefined;
-    var out = std.fs.File.stdout().writer(&buffer);
+    var out = std.Io.File.stdout().writer(io, &buffer);
     try out.interface.writeAll(
         "Usage: ffpw <filter> [<filter> ...] [--channel <ch>] [--profile <path>]\n" ++
         "\n" ++
@@ -175,13 +178,18 @@ fn printUsage() !void {
     try out.interface.flush();
 }
 
-fn resolveProfilePath(allocator: std.mem.Allocator, override: ?[]const u8, channel: ?Channel) ![]u8 {
+fn resolveProfilePath(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    env: *std.process.Environ.Map,
+    override: ?[]const u8,
+    channel: ?Channel,
+) ![]u8 {
     if (override) |path| {
         return allocator.dupe(u8, path);
     }
 
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return error.MissingHome;
-    defer allocator.free(home);
+    const home = env.get("HOME") orelse return error.MissingHome;
 
     const base = switch (builtin.os.tag) {
         .macos => "Library/Application Support/Firefox/Profiles",
@@ -192,9 +200,9 @@ fn resolveProfilePath(allocator: std.mem.Allocator, override: ?[]const u8, chann
     const base_path = try std.fs.path.join(allocator, &.{ home, base });
     defer allocator.free(base_path);
 
-    var dir = std.fs.openDirAbsolute(base_path, .{ .iterate = true }) catch
+    var dir = std.Io.Dir.openDirAbsolute(io, base_path, .{ .iterate = true }) catch
         return error.ProfileNotFound;
-    defer dir.close();
+    defer dir.close(io);
 
     // Collect all matching profiles.
     const max_profiles = 8;
@@ -202,7 +210,7 @@ fn resolveProfilePath(allocator: std.mem.Allocator, override: ?[]const u8, chann
     var found_count: usize = 0;
 
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io)) |entry| {
         if (entry.kind != .directory) continue;
 
         const match = blk: {
@@ -239,7 +247,7 @@ fn resolveProfilePath(allocator: std.mem.Allocator, override: ?[]const u8, chann
 
     // Multiple profiles found — print them and ask user to disambiguate.
     var buffer: [4096]u8 = undefined;
-    var err_writer = std.fs.File.stderr().writer(&buffer);
+    var err_writer = std.Io.File.stderr().writer(io, &buffer);
     try err_writer.interface.writeAll("Multiple Firefox profiles found:\n");
     for (found[0..found_count]) |f| {
         try err_writer.interface.print("  [{s}] {s}\n", .{ f.channel_name, f.path });
@@ -250,23 +258,24 @@ fn resolveProfilePath(allocator: std.mem.Allocator, override: ?[]const u8, chann
     return error.AmbiguousProfile;
 }
 
-fn ensureProfileFiles(profile_path: []const u8) !void {
+fn ensureProfileFiles(io: std.Io, profile_path: []const u8) !void {
     const logins = try std.fs.path.join(std.heap.page_allocator, &.{ profile_path, "logins.json" });
     defer std.heap.page_allocator.free(logins);
 
     const key4_path = try std.fs.path.join(std.heap.page_allocator, &.{ profile_path, "key4.db" });
     defer std.heap.page_allocator.free(key4_path);
 
-    if (!fileExists(logins)) return error.MissingLogins;
-    if (!fileExists(key4_path)) return error.MissingKey4;
+    if (!fileExists(io, logins)) return error.MissingLogins;
+    if (!fileExists(io, key4_path)) return error.MissingKey4;
 }
 
-fn fileExists(path: []const u8) bool {
-    _ = std.fs.accessAbsolute(path, .{}) catch return false;
+fn fileExists(io: std.Io, path: []const u8) bool {
+    _ = std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
     return true;
 }
 
 fn printMatches(
+    io: std.Io,
     allocator: std.mem.Allocator,
     profile_path: []const u8,
     filters: []const []const u8,
@@ -275,16 +284,14 @@ fn printMatches(
     const logins_path = try std.fs.path.join(allocator, &.{ profile_path, "logins.json" });
     defer allocator.free(logins_path);
 
-    var file = try std.fs.openFileAbsolute(logins_path, .{});
-    defer file.close();
-    const data = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+    const data = try std.Io.Dir.cwd().readFileAlloc(io, logins_path, allocator, .limited(10 * 1024 * 1024));
     defer allocator.free(data);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, data, .{});
     defer parsed.deinit();
 
     var buffer: [4096]u8 = undefined;
-    var out = std.fs.File.stdout().writer(&buffer);
+    var out = std.Io.File.stdout().writer(io, &buffer);
     var matched: usize = 0;
     var decrypt_failures: usize = 0;
 
@@ -368,9 +375,9 @@ fn debugPrint(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt, args);
 }
 
-fn reportError(err: anyerror) !void {
+fn reportError(io: std.Io, err: anyerror) !void {
     var buffer: [4096]u8 = undefined;
-    var err_writer = std.fs.File.stderr().writer(&buffer);
+    var err_writer = std.Io.File.stderr().writer(io, &buffer);
     switch (err) {
         error.MissingFilter => try err_writer.interface.writeAll("No search filter provided. See --help.\n"),
         error.TooManyFilters => try err_writer.interface.writeAll("Too many filter terms.\n"),

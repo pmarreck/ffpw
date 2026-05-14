@@ -4,19 +4,23 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    zig-overlay = {
+      url = "github:mitchellh/zig-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, zig-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
 
-        # Pre-fetch Zig build.zig.zon dependencies for sandboxed builds
-        zig-sqlite-src = pkgs.fetchgit {
-          url = "https://github.com/vrischmann/zig-sqlite";
-          rev = "c1a5f2720bad283f870df77b41430bd461bb9182";
-          hash = "sha256-r/vBuCu7lYDKXn1KGbCzz3f7gPqLVultm8y/s/LSZa8=";
-        };
+        # Pin Zig 0.16.0 explicitly via zig-overlay so we don't drift with nixpkgs.
+        zigPkg = zig-overlay.packages.${system}."0.16.0";
+
+        # Pre-fetch SQLite amalgamation (transitive dep of vendored zig-sqlite).
+        # The zig-sqlite wrapper itself is vendored at ./vendor-zig-sqlite as a
+        # path dep (see build.zig.zon) and patched for Zig 0.16.
         sqlite-amalgamation = pkgs.fetchzip {
           url = "https://www.sqlite.org/2025/sqlite-amalgamation-3490200.zip";
           sha256 = "sha256-zw9D86WTkqQlZIKcu2z808+4mc11bqct4GLnQsavDRw=";
@@ -24,10 +28,6 @@
         };
 
         zigPkgCache = pkgs.linkFarm "zig-pkg-cache" [
-          {
-            name = "sqlite-3.48.0-F2R_a9eODgDPCO5CDptJHZINZSIn48IFVIWUhuxxwGTb";
-            path = zig-sqlite-src;
-          }
           {
             name = "N-V-__8AAH-mpwB7g3MnqYU-ooUBF1t99RP27dZ9addtMVXD";
             path = sqlite-amalgamation;
@@ -39,7 +39,7 @@
           version = "0.1.0";
           src = ./.;
 
-          nativeBuildInputs = [ pkgs.zig_0_15 ];
+          nativeBuildInputs = [ zigPkg ];
 
           dontConfigure = true;
           dontFixup = true;
@@ -70,7 +70,7 @@
 
         devShells.default = pkgs.mkShell {
           packages = [
-            pkgs.zig_0_15
+            zigPkg
           ];
         };
       });

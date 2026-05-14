@@ -23,20 +23,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    sqlite_static_mod.addIncludePath(sqlite_c_dep.path("."));
+    sqlite_static_mod.addIncludePath(sqlite_dep.path("c"));
+    sqlite_static_mod.addCSourceFile(.{
+        .file = sqlite_c_dep.path("sqlite3.c"),
+        .flags = &.{"-std=c99"},
+    });
+    sqlite_static_mod.addCSourceFile(.{
+        .file = sqlite_dep.path("c/workaround.c"),
+        .flags = &.{"-std=c99"},
+    });
     const sqlite_static_lib = b.addLibrary(.{
         .name = "sqlite3",
         .linkage = .static,
         .root_module = sqlite_static_mod,
-    });
-    sqlite_static_lib.addIncludePath(sqlite_c_dep.path("."));
-    sqlite_static_lib.addIncludePath(sqlite_dep.path("c"));
-    sqlite_static_lib.addCSourceFile(.{
-        .file = sqlite_c_dep.path("sqlite3.c"),
-        .flags = &.{"-std=c99"},
-    });
-    sqlite_static_lib.addCSourceFile(.{
-        .file = sqlite_dep.path("c/workaround.c"),
-        .flags = &.{"-std=c99"},
     });
 
     // Create the sqlite Zig module, but link it against OUR static lib
