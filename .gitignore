@@ -3,3 +3,4 @@
 .zig-global-cache/
 zig-out/
 result
+.direnv/
