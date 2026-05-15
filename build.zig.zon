@@ -2,17 +2,16 @@
     .name = .ffpw,
     .version = "0.1.0",
     .dependencies = .{
-        // Vendored fork of zig-sqlite, patched for Zig 0.16.
-        // Upstream (github.com/vrischmann/zig-sqlite@c1a5f27) is still on 0.15.1
-        // and its build.zig uses removed APIs (ArrayList .{} default-init,
-        // Step.Compile.addIncludePath/addCSourceFile/linkLibrary methods).
-        // See ZIG_0.15_TO_0.16_MIGRATION.md "Forks of zig packages may need
-        // their own 0.16 port" (chatscan).
-        .sqlite = .{ .path = "vendor-zig-sqlite" },
+        // Fork of vrischmann/zig-sqlite, patched for Zig 0.16.
+        // Upstream (github.com/vrischmann/zig-sqlite@c1a5f27) is still on
+        // 0.15.1 and uses removed APIs.
+        .sqlite = .{
+            .url = "https://github.com/pmarreck/zig-sqlite/archive/3d9727e1de92c0b3c32a08bd30d899461a022fd6.tar.gz",
+            .hash = "sqlite-3.48.0-F2R_a6KNDgBvub_w8cyJaHZRy_JFhbUiDxnYfIY2B_SZ",
+        },
     },
     .paths = .{
         "",
-        "vendor-zig-sqlite",
     },
     .fingerprint = 0x920d5d38362c6c04,
 }
