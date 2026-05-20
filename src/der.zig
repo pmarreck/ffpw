@@ -405,22 +405,34 @@ test "parseLoginEnvelope crafted blob" {
 }
 
 /// Build a test PBES2 blob for testing.
-fn buildTestPbes2Blob() [117]u8 {
+fn buildTestPbes2Blob() [115]u8 {
     // This is a carefully crafted ASN.1 PBES2 blob.
     // Structure follows the parsePbes2 docstring exactly.
-    var buf: [117]u8 = undefined;
+    //
+    // Total emitted bytes:
+    //   2 (outer hdr) + 2 (AlgID hdr) + 11 (PBES2 OID) +
+    //   2 (PBES2-params hdr) + 49 (KDF SEQUENCE) +
+    //   31 (encScheme SEQUENCE) + 18 (ciphertext) = 115
+    //
+    // Earlier revisions advertised 117 in the outer header but only
+    // wrote 115 bytes, leaving two undefined bytes at the tail and
+    // tripping `std.debug.assert(i == 117)` on every runtime that
+    // actually executed the test (the prior CI only spawned the test
+    // binary via Zig's `--listen=-` IPC, which suppressed the panic).
+    var buf: [115]u8 = undefined;
     var i: usize = 0;
 
-    // Outer SEQUENCE
+    // Outer SEQUENCE — payload = 113 bytes
     buf[i] = 0x30;
     i += 1;
-    buf[i] = 0x73; // length 115
+    buf[i] = 0x71; // length 113 (= total 115 - 2-byte outer header)
     i += 1;
 
-    // AlgorithmIdentifier SEQUENCE
+    // AlgorithmIdentifier SEQUENCE — payload = 93 bytes
+    // (OID PBES2: 11) + (PBES2-params hdr: 2 + payload 80) = 93
     buf[i] = 0x30;
     i += 1;
-    buf[i] = 0x5f; // length 95
+    buf[i] = 0x5d; // length 93
     i += 1;
 
     // OID PBES2
@@ -431,10 +443,11 @@ fn buildTestPbes2Blob() [117]u8 {
     @memcpy(buf[i..i + 9], oid_pbes2);
     i += 9;
 
-    // PBES2-params SEQUENCE
+    // PBES2-params SEQUENCE — payload = 80 bytes
+    // (KDF hdr: 2 + payload 47) + (encScheme hdr: 2 + payload 29) = 80
     buf[i] = 0x30;
     i += 1;
-    buf[i] = 0x52; // length 82
+    buf[i] = 0x50; // length 80
     i += 1;
 
     // keyDerivationFunc SEQUENCE (PBKDF2)
@@ -527,6 +540,6 @@ fn buildTestPbes2Blob() [117]u8 {
     @memcpy(buf[i..i + 16], "ciphertext______");
     i += 16;
 
-    std.debug.assert(i == 117);
+    std.debug.assert(i == 115);
     return buf;
 }
