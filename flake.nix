@@ -77,6 +77,48 @@
           };
         };
 
+        # `checks.test` builds the test binary via the same offline
+        # --system zigPkgCache as `packages.default`, then on Linux re-spawns
+        # it through Nix's actual dynamic linker (Zig 0.16 bakes an FHS
+        # loader path that doesn't exist in the Nix build sandbox). Mirrors
+        # the pattern used in c0/libjxlz.
+        checks.test = pkgs.stdenv.mkDerivation {
+          pname = "ffpw-test";
+          version = "0.1.0";
+          src = ./.;
+          nativeBuildInputs = [ zigPkg ];
+          dontConfigure = true;
+          dontFixup = true;
+          buildPhase = ''
+            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
+            mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+            zig build test-compile \
+              --system ${zigPkgCache} \
+              -Doptimize=Debug \
+              --color off
+            DL="$(cat ${pkgs.stdenv.cc}/nix-support/dynamic-linker)"
+            rc=0
+            for f in zig-out/test-bins/*; do
+              [ -x "$f" ] || continue
+              "$DL" "$f" || rc=1
+            done
+            [ $rc -eq 0 ] || { echo "Tests failed"; exit 1; }
+            ''}
+            ${pkgs.lib.optionalString (!pkgs.stdenv.isLinux) ''
+            zig build test \
+              --system ${zigPkgCache} \
+              -Doptimize=Debug \
+              --color off
+            ''}
+          '';
+          installPhase = ''
+            mkdir -p $out
+            echo "tests passed" > $out/result
+          '';
+        };
+
         devShells.default = pkgs.mkShell {
           packages = [
             zigPkg

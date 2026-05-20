@@ -89,4 +89,14 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&tests.step);
+
+    // `test-compile` installs the test binary without running it. The Nix
+    // flake's `checks.test` uses this on Linux so it can re-launch the
+    // binary through Nix's dynamic linker (Zig 0.16 bakes an FHS loader
+    // path that doesn't exist in the build sandbox — mirrors c0/libjxlz).
+    const test_compile_step = b.step("test-compile", "Compile test binary without running it");
+    test_compile_step.dependOn(&b.addInstallArtifact(tests, .{
+        .dest_dir = .{ .override = .{ .custom = "test-bins" } },
+        .dest_sub_path = "tests",
+    }).step);
 }
