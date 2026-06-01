@@ -215,10 +215,8 @@ pub fn parsePbes2(data: []const u8) (Error || error{Overflow})!Pbes2Params {
         const prf_oid = try readTlvValue(data, &pos, 0x06);
         if (!std.mem.eql(u8, prf_oid, oid_hmac_sha256)) return Error.UnexpectedOid;
 
-        // Skip any remaining PRF parameters (e.g. NULL)
-        pos = pos + (prf_len - (prf_oid.len + 2)); // approximate; let's just jump to end
+        // Remaining PRF parameters (e.g. NULL) are ignored; we jump past the whole KDF below.
     }
-    pos = pbkdf2_params_end;
     pos = kdf_end;
 
     // encryptionScheme SEQUENCE (AES-256-CBC)
@@ -226,7 +224,6 @@ pub fn parsePbes2(data: []const u8) (Error || error{Overflow})!Pbes2Params {
     pos += 1;
     const enc_len = try derLen(data, &pos);
     if (pos + enc_len > pbes2_params_end) return Error.InvalidDer;
-    const enc_end = pos + enc_len;
 
     const aes_oid = try readTlvValue(data, &pos, 0x06);
     if (!std.mem.eql(u8, aes_oid, oid_aes256_cbc)) return Error.UnexpectedOid;
@@ -250,8 +247,6 @@ pub fn parsePbes2(data: []const u8) (Error || error{Overflow})!Pbes2Params {
         break :blk try readTlvValue(iv_raw, &inner_pos, 0x04);
     } else iv_raw;
 
-    pos = enc_end;
-    pos = pbes2_params_end;
     pos = algid_end;
 
     // Child 2: OCTET STRING ciphertext
@@ -402,6 +397,32 @@ test "parseLoginEnvelope crafted blob" {
     try testing.expectEqualStrings("key_id__________", env.key_id);
     try testing.expectEqualStrings("iviviv", env.iv);
     try testing.expectEqualStrings("cipher__________", env.ciphertext);
+}
+
+test "derLen rejects length-of-length > 4" {
+    // 0x85 => long form, 5 length bytes — beyond our u32 cap; must reject, not overflow.
+    const data = [_]u8{ 0x85, 0x01, 0x02, 0x03, 0x04, 0x05 };
+    var idx: usize = 0;
+    try testing.expectError(Error.InvalidDer, derLen(&data, &idx));
+}
+
+test "parseLoginEnvelope rejects non-SEQUENCE outer tag" {
+    const data = [_]u8{ 0x04, 0x01, 0x00 }; // OCTET STRING where a SEQUENCE is required
+    try testing.expectError(Error.InvalidDer, parseLoginEnvelope(&data));
+}
+
+test "parseLoginEnvelope rejects truncated body" {
+    // Outer SEQUENCE advertises 0x31 bytes of payload but only a few follow.
+    const data = [_]u8{ 0x30, 0x31, 0x04, 0x10, 'k', 'i', 'd' };
+    try testing.expectError(Error.InvalidDer, parseLoginEnvelope(&data));
+}
+
+test "parsePbes2 rejects wrong PBKDF2 OID" {
+    var blob = buildTestPbes2Blob();
+    // The PBKDF2 OID value starts at index 21; corrupt one content byte so the OID
+    // no longer matches and parsing must reject it with UnexpectedOid.
+    blob[25] ^= 0xff;
+    try testing.expectError(Error.UnexpectedOid, parsePbes2(&blob));
 }
 
 /// Build a test PBES2 blob for testing.

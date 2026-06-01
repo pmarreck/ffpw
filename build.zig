@@ -87,8 +87,14 @@ pub fn build(b: *std.Build) void {
         .root_module = test_module,
     });
 
+    // Actually RUN the compiled test binary. Depending on `tests.step` alone
+    // only COMPILES it — every assertion then silently "passes" (a false green
+    // that hid an untested sqlite query path). `addRunArtifact` is the gate
+    // that makes `zig build test` execute the tests on every platform.
+    const run_tests = b.addRunArtifact(tests);
+
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&tests.step);
+    test_step.dependOn(&run_tests.step);
 
     // `test-compile` installs the test binary without running it. The Nix
     // flake's `checks.test` uses this on Linux so it can re-launch the

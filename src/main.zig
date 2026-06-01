@@ -30,16 +30,8 @@ const Channel = enum {
     }
 
     fn fromString(s: []const u8) ?Channel {
-        const map = .{
-            .{ "release", Channel.release },
-            .{ "nightly", Channel.nightly },
-            .{ "dev", Channel.dev },
-            .{ "esr", Channel.esr },
-        };
-        inline for (map) |pair| {
-            if (std.mem.eql(u8, s, pair[0])) return pair[1];
-        }
-        return null;
+        // Enum field names are the canonical channel strings — keep them in sync.
+        return std.meta.stringToEnum(Channel, s);
     }
 };
 
@@ -208,6 +200,9 @@ fn resolveProfilePath(
     const max_profiles = 8;
     var found: [max_profiles]struct { path: []u8, channel_name: []const u8 } = undefined;
     var found_count: usize = 0;
+    // Each found[i].path is owned (allocated below). Free any accumulated paths if we
+    // bail out with an error before transferring ownership to the caller.
+    errdefer for (found[0..found_count]) |f| allocator.free(f.path);
 
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
@@ -251,7 +246,6 @@ fn resolveProfilePath(
     try err_writer.interface.writeAll("Multiple Firefox profiles found:\n");
     for (found[0..found_count]) |f| {
         try err_writer.interface.print("  [{s}] {s}\n", .{ f.channel_name, f.path });
-        allocator.free(f.path);
     }
     try err_writer.interface.writeAll("Use --channel <release|nightly|dev|esr> or --profile <path> to select one.\n");
     try err_writer.interface.flush();
@@ -406,8 +400,12 @@ fn reportError(io: std.Io, err: anyerror) !void {
     try err_writer.interface.flush();
 }
 
-// Force the test runner to also run tests from imported modules.
+// Force the test runner to also run tests from imported modules. Every source
+// file MUST be listed here — `addTest` only includes tests from files explicitly
+// referenced this way, so an omission silently drops that file's whole suite.
 comptime {
     _ = @import("crypto.zig");
     _ = @import("der.zig");
+    _ = @import("key4.zig");
+    _ = @import("login_decrypt.zig");
 }

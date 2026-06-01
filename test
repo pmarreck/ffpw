@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Run the full ffpw test suite: Zig unit tests + CLI shell tests.
+#
+# `zig build test` now genuinely EXECUTES the compiled test binary — build.zig
+# wires an `addRunArtifact` step, not just the compile step. (Depending on the
+# compile step alone is a silent false-green: every assertion "passes" because
+# the binary is never run. That hid an untested sqlite query path.) This is the
+# same `zig build test` the macOS CI leg runs.
+#
+# CI's Linux leg additionally re-spawns the compiled binary through Nix's
+# dynamic linker via `nix build .#checks.<system>.test`. Run `./test nix` to
+# exercise that exact sandboxed, host-independent check locally.
+#
+# Note: no `set -e` — we accumulate sub-suite failures and return their OR so a
+# single failing suite never masks the others (or aborts before they run).
+set -uo pipefail
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$root_dir"
+
+if [[ "${1:-}" == "nix" ]]; then
+	system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+	exec nix build ".#checks.${system}.test" --print-build-logs
+fi
+
+rc=0
+
+echo "── Zig unit tests ──"
+if zig build test; then
+	echo "✓ unit tests passed"
+else
+	echo "✗ unit tests failed" >&2
+	rc=1
+fi
+
+echo "── CLI shell tests ──"
+if bash bin/test/ffpw_test; then
+	echo "✓ CLI tests passed"
+else
+	echo "✗ CLI tests failed" >&2
+	rc=1
+fi
+
+exit "$rc"

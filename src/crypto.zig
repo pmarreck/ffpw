@@ -28,19 +28,14 @@ pub fn aes256CbcDecrypt(buf: []u8, iv: [block_len]u8, key: [key_len]u8) Error!us
         i -= 1;
         const offset = i * block_len;
         const block: *[block_len]u8 = buf[offset..][0..block_len];
-        // Save ciphertext block before decrypting (needed for XOR).
-        const cipher_block = block.*;
         ctx.decrypt(block, block);
-        // XOR with previous ciphertext block (or IV for first block).
+        // XOR with the previous ciphertext block (or the IV for block 0). Walking in
+        // reverse means buf[i-1] is still the *original* ciphertext (not yet decrypted),
+        // which is exactly the CBC XOR source we need — so no per-block save is required.
         const prev = if (i == 0) iv else buf[(i - 1) * block_len ..][0..block_len].*;
         for (block, prev) |*b, p| {
             b.* ^= p;
         }
-        // For blocks after the first, we need the original ciphertext of *this* block
-        // for the *next* iteration's XOR — but we've already decrypted it. Since we go
-        // in reverse, the block before us hasn't been decrypted yet, so `prev` above is
-        // still the original ciphertext. This works correctly in reverse order.
-        _ = cipher_block;
     }
 
     return pkcs7Unpad(buf);
@@ -96,7 +91,7 @@ pub fn deriveKey(
     master_password: []const u8,
     entry_salt: []const u8,
     iterations: u32,
-) [key_len]u8 {
+) error{WeakParameters}![key_len]u8 {
     // Stage 1: SHA1(globalSalt || masterPassword)
     var sha1 = Sha1.init(.{});
     sha1.update(global_salt);
@@ -105,7 +100,13 @@ pub fn deriveKey(
 
     // Stage 2: PBKDF2-HMAC-SHA256(k, entrySalt, iterations, 32)
     var dk: [key_len]u8 = undefined;
-    pbkdf2(&dk, &k, entry_salt, iterations, HmacSha256) catch unreachable;
+    // Propagate WeakParameters (e.g. iterations==0 from a tampered key4.db) rather
+    // than panicking — callers turn this into an actionable error. OutputTooLong is
+    // impossible: the output is a fixed 32 bytes, far under HMAC-SHA256's limit.
+    pbkdf2(&dk, &k, entry_salt, iterations, HmacSha256) catch |e| switch (e) {
+        error.WeakParameters => return error.WeakParameters,
+        error.OutputTooLong => unreachable,
+    };
     return dk;
 }
 
@@ -261,6 +262,12 @@ test "deriveKey known values" {
     var expected_dk: [32]u8 = undefined;
     pbkdf2(&expected_dk, &k, entry_salt, iterations, HmacSha256) catch unreachable;
 
-    const dk = deriveKey(global_salt, master_password, entry_salt, iterations);
+    const dk = try deriveKey(global_salt, master_password, entry_salt, iterations);
     try testing.expectEqualSlices(u8, &expected_dk, &dk);
+}
+
+test "deriveKey rejects zero iterations instead of panicking" {
+    // iterations==0 is reachable from a corrupted/tampered key4.db metadata row.
+    // It must surface as a recoverable error, not `panic: reached unreachable code`.
+    try testing.expectError(error.WeakParameters, deriveKey("salt", "", "entry_salt______", 0));
 }

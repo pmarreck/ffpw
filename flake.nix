@@ -28,8 +28,8 @@
         # Fork of vrischmann/zig-sqlite (patched for Zig 0.16) — used by ffpw.
         zig-sqlite-src = pkgs.fetchgit {
           url = "https://github.com/pmarreck/zig-sqlite.git";
-          rev = "3d9727e1de92c0b3c32a08bd30d899461a022fd6";
-          hash = "sha256-sIHIVmTJZrybBGtWpziwL7Q/ss7jBYqpdxhu2cuERiI=";
+          rev = "0f5271e40efa3961d5e345a0153c2310cbb506d3";
+          hash = "sha256-GFLe/tAGaOYtUT6lBwwC2/fTVBJHfGK8q8Vy/5GxaVo=";
         };
 
         zigPkgCache = pkgs.linkFarm "zig-pkg-cache" [
@@ -38,7 +38,7 @@
             path = sqlite-amalgamation;
           }
           {
-            name = "sqlite-3.48.0-F2R_a6KNDgBvub_w8cyJaHZRy_JFhbUiDxnYfIY2B_SZ";
+            name = "sqlite-3.48.0-F2R_a2-kDgDvM19xx3e7DI2HswNlObGgB4JwMIImJISU";
             path = zig-sqlite-src;
           }
         ];

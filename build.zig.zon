@@ -6,8 +6,8 @@
         // Upstream (github.com/vrischmann/zig-sqlite@c1a5f27) is still on
         // 0.15.1 and uses removed APIs.
         .sqlite = .{
-            .url = "https://github.com/pmarreck/zig-sqlite/archive/3d9727e1de92c0b3c32a08bd30d899461a022fd6.tar.gz",
-            .hash = "sqlite-3.48.0-F2R_a6KNDgBvub_w8cyJaHZRy_JFhbUiDxnYfIY2B_SZ",
+            .url = "https://github.com/pmarreck/zig-sqlite/archive/0f5271e40efa3961d5e345a0153c2310cbb506d3.tar.gz",
+            .hash = "sqlite-3.48.0-F2R_a2-kDgDvM19xx3e7DI2HswNlObGgB4JwMIImJISU",
         },
     },
     .paths = .{
