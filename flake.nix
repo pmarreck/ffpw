@@ -93,25 +93,44 @@
             export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
             export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
             mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
-            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+
+            # Compile the test binary offline (same zigPkgCache as the package).
             zig build test-compile \
               --system ${zigPkgCache} \
               -Doptimize=Debug \
               --color off
+
+            bin="$(find zig-out/test-bins -type f -perm -u+x | head -1)"
+            [ -n "$bin" ] || { echo "no test binary produced"; exit 1; }
+
+            # Run the compiled test binary. On Linux, Zig 0.16 bakes an FHS
+            # loader path absent in the sandbox, so re-spawn through Nix's
+            # dynamic linker; macOS runs it directly.
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
             DL="$(cat ${pkgs.stdenv.cc}/nix-support/dynamic-linker)"
-            rc=0
-            for f in zig-out/test-bins/*; do
-              [ -x "$f" ] || continue
-              "$DL" "$f" || rc=1
-            done
-            [ $rc -eq 0 ] || { echo "Tests failed"; exit 1; }
+            runout="$("$DL" "$bin" 2>&1)"; rc=$?
             ''}
             ${pkgs.lib.optionalString (!pkgs.stdenv.isLinux) ''
-            zig build test \
-              --system ${zigPkgCache} \
-              -Doptimize=Debug \
-              --color off
+            runout="$("$bin" 2>&1)"; rc=$?
             ''}
+            printf '%s\n' "$runout"
+
+            # META-CONTROL (MFIC): a green is trustworthy only if the harness
+            # actually RAN and ran EVERY authored test. The Zig runner prints
+            # "i/N name...OK" per test; N is the executed total. Assert: the
+            # binary passed (rc==0 — it exits non-zero on any failure), tests
+            # actually ran (N>0 — catches a compile-only false green), and N
+            # equals the number of `test` blocks authored across src/ — which
+            # catches a file silently dropped from main.zig's test aggregator
+            # (the omission that hid the broken sqlite path for ~5 weeks).
+            [ "$rc" -eq 0 ] || { echo "META-CONTROL: test binary exited $rc"; exit 1; }
+            authored="$(cat src/*.zig | grep -cE '^test ')"
+            total="$(printf '%s\n' "$runout" | grep -oE '^[0-9]+/[0-9]+ ' | head -1 | sed 's#.*/##; s# ##')"
+            [ -n "$total" ] || total=0
+            echo "meta-control: authored=$authored executed=$total"
+            [ "$total" -gt 0 ] || { echo "META-CONTROL: no tests executed (compile-only false green)"; exit 1; }
+            [ "$total" -eq "$authored" ] || { echo "META-CONTROL: executed $total but $authored authored — a file is missing from main.zig's test aggregator"; exit 1; }
+            echo "meta-control OK: all $total authored tests executed and passed"
           '';
           installPhase = ''
             mkdir -p $out

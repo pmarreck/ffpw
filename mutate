@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Mutation harness — prove the test suite BITES (is non-vacuous).
+#
+# Injects known faults into the IMPLEMENTATION one at a time and confirms
+# `./test` turns RED for each. A surviving mutant = a fault the suite cannot
+# detect = a real coverage hole worth fixing. This is the repeatable form of
+# the manual bite-check used while fixing the sqlite false-green; run it after
+# touching tests or load-bearing code to keep the green honest.
+#
+# Each mutant is "file|unique-find|replace". The find MUST occur exactly once
+# in the file (asserted) so a refactor that moves the code fails loudly here
+# rather than silently mutating nothing.
+#
+# Safe by construction: every file is backed up before mutation and restored
+# afterward (even on error, via the trap). No source is left mutated.
+set -uo pipefail
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$root_dir"
+
+mutants=(
+	"src/crypto.zig|if (b != pad) return Error.InvalidPadding;|if (b != pad) continue;"
+	"src/der.zig|if (nbytes == 0 or nbytes > 4) return Error.InvalidDer;|if (nbytes == 0 or nbytes > 999) return Error.InvalidDer;"
+	"src/key4.zig|check_buf[0..check_pt_len], \"password-check\"|check_buf[0..check_pt_len], \"password-WRONG!\""
+	"src/key4.zig|SELECT a11 FROM nssPrivate ORDER BY length(a11) DESC\") catch|SELECT a11x FROM nssPrivate ORDER BY length(a11) DESC\") catch"
+)
+
+backup_dir="$(mktemp -d "${TMPDIR:-/tmp}/ffpw-mutate.XXXXXX")"
+restore_all() { for f in src/crypto.zig src/der.zig src/key4.zig; do [ -f "$backup_dir/$(basename "$f")" ] && cp "$backup_dir/$(basename "$f")" "$f"; done; }
+trap 'restore_all; rm -rf "$backup_dir"' EXIT
+for f in src/crypto.zig src/der.zig src/key4.zig; do cp "$f" "$backup_dir/$(basename "$f")"; done
+
+caught=0
+total=0
+survived=()
+for m in "${mutants[@]}"; do
+	IFS='|' read -r file find repl <<<"$m"
+	total=$((total + 1))
+
+	if ! FILE="$file" FIND="$find" REPL="$repl" python3 -c '
+import os
+f, find, repl = os.environ["FILE"], os.environ["FIND"], os.environ["REPL"]
+s = open(f).read()
+n = s.count(find)
+assert n == 1, f"find string not unique in {f}: {n} matches (refactored?)"
+open(f, "w").write(s.replace(find, repl))
+'; then
+		echo "✗ ERROR applying mutant to $file — find not unique; treating as failure" >&2
+		survived+=("$file :: $find (UNAPPLIED)")
+		cp "$backup_dir/$(basename "$file")" "$file"
+		continue
+	fi
+
+	if ./test >/dev/null 2>&1; then
+		echo "✗ SURVIVED  $file :: $find"
+		survived+=("$file :: $find")
+	else
+		echo "✓ caught    $file :: $find"
+		caught=$((caught + 1))
+	fi
+	cp "$backup_dir/$(basename "$file")" "$file" # restore before next mutant
+done
+
+echo
+echo "mutation score: $caught/$total caught"
+if [ "${#survived[@]}" -ne 0 ]; then
+	echo "SURVIVING MUTANTS (coverage holes):" >&2
+	printf '  - %s\n' "${survived[@]}" >&2
+	exit 1
+fi
+echo "✓ all mutants caught — suite is non-vacuous"

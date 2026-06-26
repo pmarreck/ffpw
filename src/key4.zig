@@ -131,3 +131,156 @@ test "sqlite high-level prepare runs the nssPrivate query and returns real bytes
 
     try testing.expectEqualSlices(u8, &known, row.a11.data);
 }
+
+// ── End-to-end fixture: forge a synthetic key4.db and decrypt it ──────────
+//
+// The query-path test above proves `prepare` works; this proves the WHOLE
+// product path (sqlite → DER → key derivation → AES-CBC → master key) against
+// an EXTERNAL ORACLE: a master key we choose, encrypt into Firefox-format
+// blobs, and must get back byte-for-byte. This is the test that would have
+// caught the 2026-05 toolchain-drift regression end to end.
+//
+// OIDs mirror der.zig; if they drift, parsePbes2 rejects the blob and the test
+// fails loudly — so the duplication is self-checking, not a hidden assumption.
+const t_oid_pbes2 = &[_]u8{ 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0d };
+const t_oid_pbkdf2 = &[_]u8{ 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0c };
+const t_oid_hmac_sha256 = &[_]u8{ 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x09 };
+const t_oid_aes256_cbc = &[_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2a };
+
+const TlvWriter = struct {
+    buf: []u8,
+    len: usize = 0,
+    fn tlv(self: *TlvWriter, tag: u8, value: []const u8) void {
+        self.buf[self.len] = tag;
+        self.len += 1;
+        if (value.len < 128) {
+            self.buf[self.len] = @intCast(value.len);
+            self.len += 1;
+        } else {
+            self.buf[self.len] = 0x81; // long form, 1 length byte (value.len < 256)
+            self.len += 1;
+            self.buf[self.len] = @intCast(value.len);
+            self.len += 1;
+        }
+        @memcpy(self.buf[self.len..][0..value.len], value);
+        self.len += value.len;
+    }
+    fn slice(self: *TlvWriter) []u8 {
+        return self.buf[0..self.len];
+    }
+};
+
+fn derInteger(buf: *[5]u8, v: u32) []u8 {
+    var be: [4]u8 = undefined;
+    std.mem.writeInt(u32, &be, v, .big);
+    var start: usize = 0;
+    while (start < 3 and be[start] == 0) start += 1;
+    var n: usize = 0;
+    if (be[start] & 0x80 != 0) {
+        buf[n] = 0x00; // leading zero so the INTEGER stays positive
+        n += 1;
+    }
+    @memcpy(buf[n..][0 .. 4 - start], be[start..]);
+    return buf[0 .. n + (4 - start)];
+}
+
+/// Build a Firefox-style PBES2 blob:
+///   SEQUENCE { AlgId(PBES2{PBKDF2(salt,iter,hmacSHA256), AES256CBC(iv)}), OCTET STRING ct }
+fn buildPbes2Blob(out: []u8, entry_salt: []const u8, iterations: u32, iv: []const u8, ciphertext: []const u8) []u8 {
+    var prf_buf: [16]u8 = undefined;
+    var prf = TlvWriter{ .buf = &prf_buf };
+    prf.tlv(0x06, t_oid_hmac_sha256);
+
+    var p2p_buf: [128]u8 = undefined;
+    var p2p = TlvWriter{ .buf = &p2p_buf }; // PBKDF2-params
+    p2p.tlv(0x04, entry_salt);
+    var int_buf: [5]u8 = undefined;
+    p2p.tlv(0x02, derInteger(&int_buf, iterations));
+    p2p.tlv(0x30, prf.slice());
+
+    var kdf_buf: [160]u8 = undefined;
+    var kdf = TlvWriter{ .buf = &kdf_buf };
+    kdf.tlv(0x06, t_oid_pbkdf2);
+    kdf.tlv(0x30, p2p.slice());
+
+    var enc_buf: [64]u8 = undefined;
+    var enc = TlvWriter{ .buf = &enc_buf }; // encryptionScheme
+    enc.tlv(0x06, t_oid_aes256_cbc);
+    enc.tlv(0x04, iv);
+
+    var params_buf: [256]u8 = undefined;
+    var params = TlvWriter{ .buf = &params_buf }; // PBES2-params
+    params.tlv(0x30, kdf.slice());
+    params.tlv(0x30, enc.slice());
+
+    var algid_buf: [288]u8 = undefined;
+    var algid = TlvWriter{ .buf = &algid_buf };
+    algid.tlv(0x06, t_oid_pbes2);
+    algid.tlv(0x30, params.slice());
+
+    var outer_buf: [320]u8 = undefined;
+    var outer = TlvWriter{ .buf = &outer_buf };
+    outer.tlv(0x30, algid.slice());
+    outer.tlv(0x04, ciphertext);
+
+    var w = TlvWriter{ .buf = out };
+    w.tlv(0x30, outer.slice());
+    return w.slice();
+}
+
+test "end-to-end: KeyStore.open decrypts a synthetic key4.db to the known master key" {
+    const a = testing.allocator;
+    const global_salt = "global-salt-20-bytes"; // 20 bytes
+    const entry_salt_1 = "metadata-salt-16"; // 16
+    const entry_salt_2 = "nssprivate-salt1"; // 16
+    var iv1: [16]u8 = undefined;
+    @memcpy(&iv1, "iv-metadata-1234"[0..16]);
+    var iv2: [16]u8 = undefined;
+    @memcpy(&iv2, "iv-nssprivate-12"[0..16]);
+    var expected_master_key: [32]u8 = undefined;
+    @memcpy(&expected_master_key, "MASTER-KEY-32-bytes-exactly-1234"[0..32]);
+
+    // metadata.item2 = encrypt("password-check"); nssPrivate.a11 = encrypt(master key).
+    const key1 = try crypto.deriveKey(global_salt, "", entry_salt_1, 1);
+    var ct1: [64]u8 = undefined;
+    const ct1_len = try crypto.aes256CbcEncrypt(&ct1, "password-check", iv1, key1);
+
+    const key2 = try crypto.deriveKey(global_salt, "", entry_salt_2, 1);
+    var ct2: [64]u8 = undefined;
+    const ct2_len = try crypto.aes256CbcEncrypt(&ct2, &expected_master_key, iv2, key2);
+
+    var blob1_buf: [256]u8 = undefined;
+    const blob1 = buildPbes2Blob(&blob1_buf, entry_salt_1, 1, &iv1, ct1[0..ct1_len]);
+    var blob2_buf: [320]u8 = undefined;
+    const blob2 = buildPbes2Blob(&blob2_buf, entry_salt_2, 1, &iv2, ct2[0..ct2_len]);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // KeyStore.open hands the path to sqlite's C layer, so a cwd-relative path is
+    // fine; tmpDir created `.zig-cache/tmp/<sub_path>` under the test's cwd.
+    const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer a.free(dir_path);
+    const key4_path = try std.fs.path.join(a, &.{ dir_path, "key4.db" });
+    defer a.free(key4_path);
+    const key4_pathz = try a.dupeZ(u8, key4_path);
+    defer a.free(key4_pathz);
+
+    {
+        var db = try sqlite.Db.init(.{
+            .mode = .{ .File = key4_pathz },
+            .open_flags = .{ .write = true, .create = true },
+        });
+        defer db.deinit();
+        try db.exec("CREATE TABLE metadata (id TEXT, item1 BLOB, item2 BLOB)", .{}, .{});
+        try db.exec("INSERT INTO metadata (id, item1, item2) VALUES ('password', ?, ?)", .{}, .{ sqlite.Blob{ .data = global_salt }, sqlite.Blob{ .data = blob1 } });
+        try db.exec("CREATE TABLE nssPrivate (a11 BLOB)", .{}, .{});
+        try db.exec("INSERT INTO nssPrivate (a11) VALUES (?)", .{}, .{sqlite.Blob{ .data = blob2 }});
+    }
+
+    // The real load-bearing path: open read-only and extract the master key.
+    const ks = try KeyStore.open(a, dir_path, "");
+    try testing.expectEqualSlices(u8, &expected_master_key, &ks.master_key);
+
+    // Wrong password must be rejected, never silently mis-decrypt.
+    try testing.expectError(error.WrongMasterPassword, KeyStore.open(a, dir_path, "wrong-password"));
+}

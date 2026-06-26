@@ -2,6 +2,18 @@
 
 ## Completed
 
+- [x] **Quality recovery after the false-green incident** (2026-06-26). Three
+      controls so the green is trustworthy and the incident class can't recur:
+      (1) **meta-control** in `./test` *and* CI (`flake.nix` checks.test) — asserts
+      the harness actually ran AND executed every authored test (executed count ==
+      `^test` count across src/); catches both a compile-only test step and a file
+      dropped from main.zig's aggregator. (2) **end-to-end golden test**
+      (`key4.zig`) — forges a synthetic key4.db with real PBES2 blobs and asserts
+      `KeyStore.open` returns the exact known master key (external oracle) + rejects
+      a wrong password; this is the full product path that the May regression broke.
+      (3) **`./mutate`** — mutation harness that injects known faults and confirms
+      `./test` goes red for each (currently 4/4 caught). Fleet-wide risk (shared
+      scaffold) handed to Einstein via LLMsend for a cross-project sweep.
 - [x] **Fix sqlite false-green + bump vendored zig-sqlite** (2026-06-18). The
       high-level zig-sqlite query API hit a Zig 0.16 comptime mis-lowering
       (`query.zig getQuery()` returned a slice into a by-value comptime struct
@@ -26,11 +38,10 @@ judgment calls) — the higher-priority findings from that review are already fi
 DER-negative and login_decrypt tests).
 
 ### Test coverage gaps still open
-- [ ] `key4.zig KeyStore.open` full-flow unit tests. The sqlite `prepare`/query
-      path is now covered (2026-06-18), but the end-to-end flow still isn't: build a
-      synthetic `key4.db` fixture (in-memory sqlite) with real `metadata`/`nssPrivate`
-      rows and walk correct-password happy path, wrong-password rejection, missing
-      `nssPrivate` row, corrupted ASN.1 blob — the 7 error branches.
+- [x] `key4.zig KeyStore.open` full-flow test (2026-06-26). Synthetic key4.db
+      e2e test covers correct-password happy path + wrong-password rejection. Could
+      still add: missing `nssPrivate` row, corrupted ASN.1 blob (lower priority now
+      the happy path + a negative branch are pinned).
 - [ ] `main.zig` CLI driver has no unit tests. Add tests for arg parsing
       (`--profile`, `--master-password`, `--json`, unknown flags, unknown profile
       names) so refactors can't silently change CLI behavior.

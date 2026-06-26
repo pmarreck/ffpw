@@ -1,5 +1,6 @@
 # Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
 ver=1.2
 annotate=[
-	test = Full test suite runner: zig unit tests + CLI shell tests (./test nix for sandboxed CI-parity check)
+	mutate = Mutation harness: injects known faults into impl, asserts ./test goes red for each (proves the suite is non-vacuous)
+	test = Full test suite runner: zig unit tests (+ executed==authored meta-control) + CLI shell tests; './test nix' runs the sandboxed CI check
 ]

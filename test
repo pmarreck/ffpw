@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
 # Run the full ffpw test suite: Zig unit tests + CLI shell tests.
 #
-# `zig build test` now genuinely EXECUTES the compiled test binary — build.zig
-# wires an `addRunArtifact` step, not just the compile step. (Depending on the
-# compile step alone is a silent false-green: every assertion "passes" because
-# the binary is never run. That hid an untested sqlite query path.) This is the
-# same `zig build test` the macOS CI leg runs.
+# `zig build test` genuinely EXECUTES the compiled test binary — build.zig wires
+# an `addRunArtifact` step, not just the compile step. (Depending on the compile
+# step alone is a silent false-green: every assertion "passes" because the binary
+# is never run. That hid an untested, broken sqlite query path for ~5 weeks.)
 #
-# CI's Linux leg additionally re-spawns the compiled binary through Nix's
-# dynamic linker via `nix build .#checks.<system>.test`. Run `./test nix` to
-# exercise that exact sandboxed, host-independent check locally.
+# META-CONTROL (MFIC): a green is only trustworthy if the harness actually ran
+# AND ran every test. This script asserts the executed test count equals the
+# number of `test` blocks authored across src/ — so two regressions self-report:
+#   (a) the run step going compile-only again  -> no "run test" line       -> FAIL
+#   (b) a file dropped from main.zig's aggregator -> executed < authored    -> FAIL
+# The count is derived mechanically (not a hand-maintained magic number), so it
+# tracks new tests automatically.
 #
-# Note: no `set -e` — we accumulate sub-suite failures and return their OR so a
-# single failing suite never masks the others (or aborts before they run).
+# CI's Linux leg additionally re-spawns the binary through Nix's dynamic linker
+# via `nix build .#checks.<system>.test`. Run `./test nix` for that exact
+# sandboxed, host-independent check locally.
+#
+# No `set -e` — sub-suite failures are accumulated (rc OR) so one failing suite
+# never masks or aborts the others.
 set -uo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,11 +33,35 @@ fi
 rc=0
 
 echo "── Zig unit tests ──"
-if zig build test; then
-	echo "✓ unit tests passed"
+authored=$(find src -maxdepth 1 -name '*.zig' -exec cat {} + | grep -cE '^test ')
+test_out="$(zig build test --summary all 2>&1)"
+test_rc=$?
+echo "$test_out"
+
+# Parse "run test N pass (M total)" or "run test N pass, K fail (M total)".
+re='run test ([0-9]+) pass(, [0-9]+ fail)? \(([0-9]+) total\)'
+if [[ "$test_out" =~ $re ]]; then
+	passed="${BASH_REMATCH[1]}"
+	total="${BASH_REMATCH[3]}"
 else
+	passed=0
+	total=0
+fi
+
+if [[ "$test_rc" -ne 0 ]]; then
 	echo "✗ unit tests failed" >&2
 	rc=1
+elif [[ "$total" -eq 0 ]]; then
+	echo "✗ META-CONTROL: no 'run test' summary line — the test step compiled but never ran (false green)" >&2
+	rc=1
+elif [[ "$total" -ne "$authored" ]]; then
+	echo "✗ META-CONTROL: executed $total test(s) but $authored authored in src/ — a file is missing from main.zig's test aggregator" >&2
+	rc=1
+elif [[ "$passed" -ne "$total" ]]; then
+	echo "✗ $((total - passed)) test(s) failed" >&2
+	rc=1
+else
+	echo "✓ unit tests passed ($passed/$authored authored tests executed)"
 fi
 
 echo "── CLI shell tests ──"
