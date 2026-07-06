@@ -1,5 +1,24 @@
 # ffpw — Plan / TODO
 
+## Migration state (2026-07-06, fleet wind-down to Thelio)
+
+**Current state: GREEN, fully pushed.** `yolo` = origin = `9c71c84d`
+("build: local-only PATH-shadow control"). Working copy clean, no WIP.
+Last CI run (GH Actions + Garnix) was green through `c91b235c`; the final
+commit `9c71c84d` only touched the `./build` script (not evaluated by CI —
+no code/flake change), so gates are unaffected.
+
+**Resume on Thelio with:** `./test` (should print `25/25 authored tests
+executed`), `./mutate` (should print `4/4 caught`). Both must stay green.
+
+**Next steps (all optional follow-ups, nothing blocking):**
+- `main.zig` CLI-driver unit tests (arg parsing) — still open, see below.
+- Extend the e2e key4 test with missing-`nssPrivate`-row and corrupted-blob
+  branches (happy path + wrong-password already covered).
+- Two fleet proposals are with Einstein (LLMsend, `~/inbox/2026-06-26-*`):
+  (a) test-harness false-green sweep, (b) PATH-shadow control as a standard.
+  No ffpw action pending on either.
+
 ## Completed
 
 - [x] **Quality recovery after the false-green incident** (2026-06-26). Three
