@@ -258,14 +258,27 @@ fn resolveProfilePath(
         @memcpy(name_store[count][0..entry.name.len], entry.name);
         const name = name_store[count][0..entry.name.len];
 
-        var sub = dir.openDir(io, name, .{}) catch continue;
+        // Nothing here degrades an error into a value. A profile we cannot open
+        // or stat is REPORTED and skipped, never admitted with a placeholder
+        // mtime: substituting 0 would make it merely look ancient — identical
+        // to a genuinely old profile — which is precisely how a stale profile
+        // silently outranked the live one and left no trace to debug.
+        var sub = dir.openDir(io, name, .{}) catch |err| {
+            try warnSkippedProfile(io, name, @errorName(err));
+            continue;
+        };
         defer sub.close(io);
+
+        const st = sub.stat(io) catch |err| {
+            try warnSkippedProfile(io, name, @errorName(err));
+            continue;
+        };
 
         candidates[count] = .{
             .name = name,
-            .has_logins = fileExistsIn(io, sub, "logins.json"),
-            .has_key4 = fileExistsIn(io, sub, "key4.db"),
-            .mtime_ns = if (dir.statFile(io, name, .{})) |st| st.mtime.nanoseconds else |_| 0,
+            .has_logins = try fileExistsIn(io, sub, "logins.json"),
+            .has_key4 = try fileExistsIn(io, sub, "key4.db"),
+            .mtime_ns = st.mtime.nanoseconds,
         };
         count += 1;
     }
@@ -288,9 +301,29 @@ fn resolveProfilePath(
     return std.fs.path.join(allocator, &.{ base_path, candidates[winner].name });
 }
 
-fn fileExistsIn(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) bool {
-    _ = dir.statFile(io, sub_path, .{}) catch return false;
+/// Existence check that keeps "absent" and "broken" distinct. FileNotFound is a
+/// legitimate answer — the profile simply lacks the file — but any other error
+/// (permissions, I/O) is a real failure and propagates rather than quietly
+/// reading as "absent", which would silently disqualify a usable profile.
+fn fileExistsIn(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !bool {
+    _ = dir.statFile(io, sub_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
     return true;
+}
+
+/// A profile directory we cannot inspect is announced, never silently dropped —
+/// a skipped candidate that leaves no trace is indistinguishable from one that
+/// was never there.
+fn warnSkippedProfile(io: std.Io, name: []const u8, reason: []const u8) !void {
+    var buffer: [512]u8 = undefined;
+    var err_writer = std.Io.File.stderr().writer(io, &buffer);
+    try err_writer.interface.print(
+        "Warning: skipping profile '{s}': {s}\n",
+        .{ name, reason },
+    );
+    try err_writer.interface.flush();
 }
 
 fn ensureProfileFiles(io: std.Io, profile_path: []const u8) !void {

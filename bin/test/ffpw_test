@@ -67,6 +67,50 @@ fi
 
 rm -rf "$work_dir"
 
+# Test 4: among several usable profiles, the most recently updated one wins —
+# asserted in BOTH directions.
+#
+# Selection must key on real filesystem mtime, not on directory iteration order.
+# A single-direction check is not enough: if mtime is ignored, the winner is
+# whatever the OS happens to list first, and with two candidates that is a coin
+# flip the test can win by luck. Flipping which profile is newest defeats that —
+# no fixed iteration order satisfies both assertions, so only genuine mtime
+# ranking passes. (This is the bug that let a year-stale Firefox profile beat
+# the live one, hidden because a failed stat was quietly read as mtime 0.)
+((tests++))
+echo "Testing: most recently updated profile wins (both directions)..."
+home_dir=$(mktemp -d --tmpdir ffpw_home.XXXXXX)
+case "$(uname -s)" in
+	Darwin) profiles_base="$home_dir/Library/Application Support/Firefox/Profiles" ;;
+	*)      profiles_base="$home_dir/.mozilla/firefox" ;;
+esac
+profile_a="$profiles_base/aaa.default-nightly"
+profile_b="$profiles_base/zzz.default-beta"
+mkdir -p "$profile_a" "$profile_b"
+for p in "$profile_a" "$profile_b"; do
+	echo '{"logins": []}' > "$p/logins.json"
+	: > "$p/key4.db"
+done
+
+wrong_directions=0
+for expected_winner in "$profile_a" "$profile_b"; do
+	if [[ "$expected_winner" == "$profile_a" ]]; then loser="$profile_b"; else loser="$profile_a"; fi
+	# Stamp mtimes AFTER populating — writing files bumps the directory's mtime.
+	touch -t 202001010000 "$loser"
+	touch -t 203001010000 "$expected_winner"
+	select_output=$(HOME="$home_dir" ffpw --host example.com 2>&1 >/dev/null)
+	if [[ "$select_output" != *"$(basename "$expected_winner")"* ]]; then
+		((wrong_directions++))
+		echo "  expected $(basename "$expected_winner") to win; got: $select_output" >&2
+	fi
+done
+if [[ "$wrong_directions" -eq 0 ]]; then
+	report_result 1 "most recently updated profile wins (both directions)"
+else
+	report_result 0 "profile selection ignored mtime ($wrong_directions of 2 directions wrong)"
+fi
+rm -rf "$home_dir"
+
 if [[ $fails -eq 0 ]]; then
 	echo "All $tests tests passed"
 else
