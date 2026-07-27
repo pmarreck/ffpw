@@ -1,25 +1,74 @@
 # ffpw — Plan / TODO
 
-## Migration state (2026-07-06, fleet wind-down to Thelio)
+## Current state (2026-07-27, first session on thelio-nixos)
 
-**Current state: GREEN, fully pushed.** `yolo` = origin = `9c71c84d`
-("build: local-only PATH-shadow control"). Working copy clean, no WIP.
-Last CI run (GH Actions + Garnix) was green through `c91b235c`; the final
-commit `9c71c84d` only touched the `./build` script (not evaluated by CI —
-no code/flake change), so gates are unaffected.
+**GREEN.** `./test` prints `31/31 authored tests executed` + CLI + build-script
+suites; `./mutate` prints `6/6 caught`. Warm `./test` is ~1.7s (a cold Zig cache
+costs ~40s once, for the test binary + sqlite3 C lib).
 
-**Resume on Thelio with:** `./test` (should print `25/25 authored tests
-executed`), `./mutate` (should print `4/4 caught`). Both must stay green.
+**Thelio is now the primary dev box** (Mac reachable over Tailscale, passwordless
+ssh). This clone was 4 commits behind origin and on a detached HEAD from the jj
+era; `yolo` is now a normal git branch tracking `origin/yolo`. jj is abandoned
+(LLM impedance mismatch) — use plain git. Tag `rescue/pre-sync-b390c0f` parks the
+pre-sync commit whose content was verified already present upstream.
 
-**Next steps (all optional follow-ups, nothing blocking):**
-- `main.zig` CLI-driver unit tests (arg parsing) — still open, see below.
+**Open — needs Peter's call:**
+- [ ] `nix build` emits a **dynamically-linked musl** binary
+      (interp `/lib/ld-musl-x86_64.so.1`, which does not exist on NixOS), so the
+      artifact `./build` installs into `zig-out/bin/` cannot execute locally;
+      `bin/ffpw` only works because it falls back to a native `zig build`. CI
+      papers over this by re-spawning through an explicit loader (`"$DL" "$bin"`).
+      Recommendation: make the nix build **statically** linked musl — then it runs
+      anywhere, CI drops the loader dance, and `./build`'s install is genuinely
+      usable. Alternative: force a native/glibc nix build.
+- [ ] Add a `./build` control asserting the installed binary actually *executes*
+      (same spirit as the PATH-shadow control) so this class cannot recur silently.
+
+**Next steps (optional, nothing blocking):**
 - Extend the e2e key4 test with missing-`nssPrivate`-row and corrupted-blob
   branches (happy path + wrong-password already covered).
+- `main.zig` arg-parsing tests (profile *selection* is now covered; the flag
+  parser still is not).
 - Two fleet proposals are with Einstein (LLMsend, `~/inbox/2026-06-26-*`):
   (a) test-harness false-green sweep, (b) PATH-shadow control as a standard.
   No ffpw action pending on either.
 
 ## Completed
+
+- [x] **Profile selection is capability-based, not name-based** (2026-07-27
+      11:00 EST). Reported: `ffpw amazon.com` → "Missing logins.json in profile
+      directory." Root cause: selection matched directory-name SUFFIXES in a
+      fixed order (release, nightly, dev, esr, then legacy "default"), so it
+      locked onto a stale `rbbm52p1.default-nightly` (key4.db present,
+      logins.json absent) and never considered the live Firefox **Beta** profile
+      `b5y7l11v.default`. `beta` was not even in the Channel enum. Fixed by
+      splitting the policy out as a pure `pickProfile`/`isEligible` over
+      `ProfileCandidate` facts: auto-detection now qualifies a profile by
+      CAPABILITY (must hold both logins.json and key4.db) rather than by name, so
+      it is channel- and naming-agnostic; ties go to the most recently modified
+      profile; an explicit `--channel` still wins outright so its error stays
+      precise. Discloses on stderr when it picks among >1 usable profile. Added
+      `beta`. 6 tests written FIRST as a classifier over candidate SETS — 5 failed
+      red on real behavior (`expected 1, found 0` = it chose Nightly) before the
+      fix. 2 new mutants; `./mutate` 6/6.
+- [x] **`./build` no longer depends on shell globbing** (2026-07-27 10:52 EST).
+      Peter's shells run `set -f` (noglob), which propagates into scripts, so
+      `install -m755 result/bin/* zig-out/bin/` left the pattern literal and the
+      nix output never reached `zig-out/bin`. Replaced with `find -L … -exec
+      install`. Test runs the REAL `./build` against a stubbed `nix` with globbing
+      both OFF and ON — the pair matters, since a glob-dependent script passes the
+      globbing-ON case.
+- [x] **`./mutate` de-Pythoned** (2026-07-27 10:58 EST). It shelled out to
+      `python3` for its literal find/replace — unavailable in the dev shell and
+      against project policy — silently scoring 0/4 UNAPPLIED. Reimplemented in
+      awk (strings passed via ENVIRON so awk does no escape processing), still
+      asserting the needle occurs exactly once.
+- [x] **Repo/tooling repair on thelio** (2026-07-27). Detached HEAD → `yolo`
+      tracking origin; 4 unfetched commits pulled; `AGENTS.md` was committed as an
+      ABSOLUTE symlink into a stale macOS path (dangling on every Linux box) →
+      repointed relative; `.codescan/config.ini` pointed at port **11435** where
+      nothing listens (ollama is on 11434), so semantic search was silently dead →
+      adopted validate's config + weights.toml and reindexed.
 
 - [x] **Quality recovery after the false-green incident** (2026-06-26). Three
       controls so the green is trustworthy and the incident class can't recur:

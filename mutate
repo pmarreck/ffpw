@@ -23,12 +23,20 @@ mutants=(
 	"src/der.zig|if (nbytes == 0 or nbytes > 4) return Error.InvalidDer;|if (nbytes == 0 or nbytes > 999) return Error.InvalidDer;"
 	"src/key4.zig|check_buf[0..check_pt_len], \"password-check\"|check_buf[0..check_pt_len], \"password-WRONG!\""
 	"src/key4.zig|SELECT a11 FROM nssPrivate ORDER BY length(a11) DESC\") catch|SELECT a11x FROM nssPrivate ORDER BY length(a11) DESC\") catch"
+	# Profile selection: the capability filter and the most-recently-used
+	# tie-break are what keep ffpw off a stale profile that still has a key4.db
+	# but no logins.json.
+	"src/main.zig|return c.has_logins and c.has_key4;|return c.has_logins or c.has_key4;"
+	"src/main.zig|if (c.mtime_ns > candidates[b].mtime_ns) best = i;|if (c.mtime_ns < candidates[b].mtime_ns) best = i;"
 )
 
+# Every file a mutant touches: backed up before, restored after and on trap.
+mutated_files=(src/crypto.zig src/der.zig src/key4.zig src/main.zig)
+
 backup_dir="$(mktemp -d "${TMPDIR:-/tmp}/ffpw-mutate.XXXXXX")"
-restore_all() { for f in src/crypto.zig src/der.zig src/key4.zig; do [ -f "$backup_dir/$(basename "$f")" ] && cp "$backup_dir/$(basename "$f")" "$f"; done; }
+restore_all() { for f in "${mutated_files[@]}"; do [ -f "$backup_dir/$(basename "$f")" ] && cp "$backup_dir/$(basename "$f")" "$f"; done; }
 trap 'restore_all; rm -rf "$backup_dir"' EXIT
-for f in src/crypto.zig src/der.zig src/key4.zig; do cp "$f" "$backup_dir/$(basename "$f")"; done
+for f in "${mutated_files[@]}"; do cp "$f" "$backup_dir/$(basename "$f")"; done
 
 caught=0
 total=0
@@ -37,14 +45,30 @@ for m in "${mutants[@]}"; do
 	IFS='|' read -r file find repl <<<"$m"
 	total=$((total + 1))
 
-	if ! FILE="$file" FIND="$find" REPL="$repl" python3 -c '
-import os
-f, find, repl = os.environ["FILE"], os.environ["FIND"], os.environ["REPL"]
-s = open(f).read()
-n = s.count(find)
-assert n == 1, f"find string not unique in {f}: {n} matches (refactored?)"
-open(f, "w").write(s.replace(find, repl))
-'; then
+	# Literal (non-regex) single-occurrence replace in awk — no python3, which is
+	# both unavailable in the dev shell and against project policy. Strings are
+	# passed via ENVIRON, not -v, so awk does no backslash-escape processing on
+	# them. Refusing to apply unless the needle appears EXACTLY once keeps a
+	# mutant from silently going stale (or over-applying) after a refactor.
+	mutant_out="$backup_dir/mutant.out"
+	if FILE="$mutant_out" FIND="$find" REPL="$repl" awk '
+		BEGIN { find = ENVIRON["FIND"]; repl = ENVIRON["REPL"]; n = 0 }
+		{
+			out = ""; s = $0
+			while ((p = index(s, find)) > 0) {
+				n++
+				out = out substr(s, 1, p - 1) repl
+				s = substr(s, p + length(find))
+			}
+			lines[NR] = out s
+		}
+		END {
+			if (n != 1) exit 3
+			for (i = 1; i <= NR; i++) print lines[i] > ENVIRON["FILE"]
+		}
+	' "$file"; then
+		cp "$mutant_out" "$file"
+	else
 		echo "✗ ERROR applying mutant to $file — find not unique; treating as failure" >&2
 		survived+=("$file :: $find (UNAPPLIED)")
 		cp "$backup_dir/$(basename "$file")" "$file"

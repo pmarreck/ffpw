@@ -5,8 +5,12 @@ const login_decrypt = @import("login_decrypt.zig");
 
 var debug_enabled: bool = false;
 
+// Channels exist only so `--channel` can express intent; automatic discovery is
+// deliberately name-agnostic (see `isEligible`), so there is no table of "known"
+// suffixes to fall out of date as Mozilla adds channels.
 const Channel = enum {
     release,
+    beta,
     nightly,
     dev,
     esr,
@@ -14,18 +18,10 @@ const Channel = enum {
     fn profileSuffix(self: Channel) []const u8 {
         return switch (self) {
             .release => "default-release",
+            .beta => "default-beta",
             .nightly => "default-nightly",
             .dev => "dev-edition-default",
             .esr => "default-esr",
-        };
-    }
-
-    fn displayName(self: Channel) []const u8 {
-        return switch (self) {
-            .release => "Release",
-            .nightly => "Nightly",
-            .dev => "Developer Edition",
-            .esr => "ESR",
         };
     }
 
@@ -35,9 +31,59 @@ const Channel = enum {
     }
 };
 
-const all_channels = [_]Channel{ .release, .nightly, .dev, .esr };
-// Also try legacy "default" suffix (older Firefox installs)
-const legacy_suffix = "default";
+const max_profiles = 16;
+const max_profile_name = 128;
+
+/// One candidate profile directory, reduced to the facts selection needs.
+/// Splitting these facts out of the directory walk is what makes the "which
+/// profile wins" policy unit-testable without touching a filesystem.
+const ProfileCandidate = struct {
+    name: []const u8,
+    has_logins: bool,
+    has_key4: bool,
+    mtime_ns: i128,
+};
+
+/// True when a candidate should be considered at all.
+///
+/// With an explicit `--channel`, stated intent wins outright: the suffix
+/// decides even if that profile turns out to be unusable, so the caller can
+/// report exactly what it is missing rather than silently using a different
+/// one. Without a channel, eligibility is by CAPABILITY rather than by name —
+/// ffpw needs both files, and any directory holding them is a real profile
+/// whatever its channel or naming scheme.
+fn isEligible(c: ProfileCandidate, channel: ?Channel) bool {
+    if (channel) |ch| return std.mem.endsWith(u8, c.name, ch.profileSuffix());
+    return c.has_logins and c.has_key4;
+}
+
+/// Choose which profile directory to use, returning an index into `candidates`.
+/// Pure: every filesystem fact arrives via `candidates`.
+///
+/// Ties go to the most recently modified profile — the one actually being
+/// browsed with. Selecting on directory-name suffixes instead is what made
+/// ffpw lock onto a stale `…default-nightly` that no longer had a logins.json
+/// while Firefox Beta held the real passwords.
+fn pickProfile(candidates: []const ProfileCandidate, channel: ?Channel) ?usize {
+    var best: ?usize = null;
+    for (candidates, 0..) |c, i| {
+        if (!isEligible(c, channel)) continue;
+        if (best) |b| {
+            if (c.mtime_ns > candidates[b].mtime_ns) best = i;
+        } else best = i;
+    }
+    return best;
+}
+
+/// How many candidates qualify. Used only to disclose on stderr when ffpw had
+/// to choose among several password stores on the user's behalf.
+fn countEligible(candidates: []const ProfileCandidate, channel: ?Channel) usize {
+    var n: usize = 0;
+    for (candidates) |c| {
+        if (isEligible(c, channel)) n += 1;
+    }
+    return n;
+}
 
 const max_filters = 16;
 
@@ -155,7 +201,7 @@ fn printUsage(io: std.Io) !void {
         "\n" ++
         "Options:\n" ++
         "  --host <filter>          Alias for a positional filter\n" ++
-        "  --channel <ch>           Firefox channel: release, nightly, dev, esr\n" ++
+        "  --channel <ch>           Firefox channel: release, beta, nightly, dev, esr\n" ++
         "  --profile <path>         Firefox profile directory (overrides --channel)\n" ++
         "  -h, --help               Show this help\n" ++
         "\n" ++
@@ -196,60 +242,55 @@ fn resolveProfilePath(
         return error.ProfileNotFound;
     defer dir.close(io);
 
-    // Collect all matching profiles.
-    const max_profiles = 8;
-    var found: [max_profiles]struct { path: []u8, channel_name: []const u8 } = undefined;
-    var found_count: usize = 0;
-    // Each found[i].path is owned (allocated below). Free any accumulated paths if we
-    // bail out with an error before transferring ownership to the caller.
-    errdefer for (found[0..found_count]) |f| allocator.free(f.path);
+    // Gather every subdirectory as a candidate, then let the pure `pickProfile`
+    // policy decide. `entry.name` is only valid until the next iteration, so
+    // names are copied into a fixed backing store.
+    var name_store: [max_profiles][max_profile_name]u8 = undefined;
+    var candidates: [max_profiles]ProfileCandidate = undefined;
+    var count: usize = 0;
 
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
+        if (count == max_profiles) break;
         if (entry.kind != .directory) continue;
+        if (entry.name.len > max_profile_name) continue;
 
-        const match = blk: {
-            if (channel) |ch| {
-                // User specified a channel — only look for that suffix.
-                if (std.mem.endsWith(u8, entry.name, ch.profileSuffix()))
-                    break :blk ch.displayName();
-            } else {
-                // Auto-detect: try all known suffixes.
-                for (all_channels) |ch| {
-                    if (std.mem.endsWith(u8, entry.name, ch.profileSuffix()))
-                        break :blk ch.displayName();
-                }
-                if (std.mem.endsWith(u8, entry.name, legacy_suffix))
-                    break :blk @as([]const u8, "Default (legacy)");
-            }
-            break :blk @as(?[]const u8, null);
+        @memcpy(name_store[count][0..entry.name.len], entry.name);
+        const name = name_store[count][0..entry.name.len];
+
+        var sub = dir.openDir(io, name, .{}) catch continue;
+        defer sub.close(io);
+
+        candidates[count] = .{
+            .name = name,
+            .has_logins = fileExistsIn(io, sub, "logins.json"),
+            .has_key4 = fileExistsIn(io, sub, "key4.db"),
+            .mtime_ns = if (dir.statFile(io, name, .{})) |st| st.mtime.nanoseconds else |_| 0,
         };
-
-        if (match) |channel_name| {
-            if (found_count < max_profiles) {
-                found[found_count] = .{
-                    .path = try std.fs.path.join(allocator, &.{ base_path, entry.name }),
-                    .channel_name = channel_name,
-                };
-                found_count += 1;
-            }
-        }
+        count += 1;
     }
 
-    if (found_count == 0) return error.ProfileNotFound;
+    const winner = pickProfile(candidates[0..count], channel) orelse return error.ProfileNotFound;
 
-    if (found_count == 1) return found[0].path;
-
-    // Multiple profiles found — print them and ask user to disambiguate.
-    var buffer: [4096]u8 = undefined;
-    var err_writer = std.Io.File.stderr().writer(io, &buffer);
-    try err_writer.interface.writeAll("Multiple Firefox profiles found:\n");
-    for (found[0..found_count]) |f| {
-        try err_writer.interface.print("  [{s}] {s}\n", .{ f.channel_name, f.path });
+    // Picking among several password stores on the user's behalf is worth
+    // disclosing; it goes to stderr so stdout stays pipeable.
+    const eligible = countEligible(candidates[0..count], channel);
+    if (eligible > 1) {
+        var buffer: [1024]u8 = undefined;
+        var err_writer = std.Io.File.stderr().writer(io, &buffer);
+        try err_writer.interface.print(
+            "Note: {d} usable Firefox profiles found; using the most recently updated ({s}). Override with --profile or --channel.\n",
+            .{ eligible, candidates[winner].name },
+        );
+        try err_writer.interface.flush();
     }
-    try err_writer.interface.writeAll("Use --channel <release|nightly|dev|esr> or --profile <path> to select one.\n");
-    try err_writer.interface.flush();
-    return error.AmbiguousProfile;
+
+    return std.fs.path.join(allocator, &.{ base_path, candidates[winner].name });
+}
+
+fn fileExistsIn(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) bool {
+    _ = dir.statFile(io, sub_path, .{}) catch return false;
+    return true;
 }
 
 fn ensureProfileFiles(io: std.Io, profile_path: []const u8) !void {
@@ -384,9 +425,8 @@ fn reportError(io: std.Io, err: anyerror) !void {
         error.MissingKey4 => try err_writer.interface.writeAll("Missing key4.db in profile directory.\n"),
         error.MissingField => try err_writer.interface.writeAll("logins.json missing expected fields.\n"),
         error.ProfileNotFound => try err_writer.interface.writeAll("No Firefox profile found. Use --profile <path>.\n"),
-        error.AmbiguousProfile => {}, // already printed details in resolveProfilePath
         error.MissingChannel => try err_writer.interface.writeAll("Missing value after --channel.\n"),
-        error.InvalidChannel => try err_writer.interface.writeAll("Invalid channel. Use: release, nightly, dev, esr.\n"),
+        error.InvalidChannel => try err_writer.interface.writeAll("Invalid channel. Use: release, beta, nightly, dev, esr.\n"),
         error.MissingHome => try err_writer.interface.writeAll("HOME is not set.\n"),
         error.UnsupportedOs => try err_writer.interface.writeAll("Unsupported OS for automatic profile discovery.\n"),
         error.Key4OpenFailed => try err_writer.interface.writeAll("Failed to open key4.db.\n"),
@@ -408,4 +448,77 @@ comptime {
     _ = @import("der.zig");
     _ = @import("key4.zig");
     _ = @import("login_decrypt.zig");
+}
+
+// ── Profile-selection tests ──────────────────────────────────────────────
+//
+// Regression guard for the 2026-07-27 report: `ffpw amazon.com` died with
+// "Missing logins.json in profile directory." on a box whose live profile was
+// Firefox Beta. Selection matched directory-name SUFFIXES in a fixed order
+// (release, nightly, dev, esr, then legacy "default"), so it locked onto a
+// stale `…default-nightly` — which still had a key4.db but no logins.json —
+// and never considered the profile actually in use.
+//
+// These pin the policy as a classifier over SETS of candidates, not a single
+// happy example: a name-based selector passes any one-profile case, so only
+// competing candidates can tell a correct policy from a broken one.
+
+const testing = std.testing;
+
+fn cand(name: []const u8, has_logins: bool, has_key4: bool, mtime_ns: i128) ProfileCandidate {
+    return .{ .name = name, .has_logins = has_logins, .has_key4 = has_key4, .mtime_ns = mtime_ns };
+}
+
+test "pickProfile skips a profile that lacks logins.json, even if it is newer" {
+    // Peter's box, with the recency signal deliberately inverted so this pins
+    // capability-beats-recency rather than accidentally passing on mtime.
+    const candidates = [_]ProfileCandidate{
+        cand("rbbm52p1.default-nightly", false, true, 900),
+        cand("b5y7l11v.default", true, true, 100),
+    };
+    try testing.expectEqual(@as(?usize, 1), pickProfile(&candidates, null));
+}
+
+test "pickProfile picks the most recently used among several usable profiles" {
+    const candidates = [_]ProfileCandidate{
+        cand("a.default", true, true, 100),
+        cand("b.default-release", true, true, 900),
+        cand("c.default-nightly", true, true, 500),
+    };
+    try testing.expectEqual(@as(?usize, 1), pickProfile(&candidates, null));
+}
+
+test "pickProfile is channel-agnostic: unrecognized profile names still qualify" {
+    // Beta, a custom `-P` profile, a Flatpak/Snap dir: none end in a suffix the
+    // old matcher knew, so all of them were invisible to auto-detection.
+    const candidates = [_]ProfileCandidate{
+        cand("xyz.default-beta", true, true, 400),
+        cand("work-profile", true, true, 800),
+    };
+    try testing.expectEqual(@as(?usize, 1), pickProfile(&candidates, null));
+}
+
+test "pickProfile requires BOTH logins.json and key4.db" {
+    const candidates = [_]ProfileCandidate{
+        cand("a.default", true, false, 100),
+        cand("b.default-nightly", false, true, 200),
+    };
+    try testing.expectEqual(@as(?usize, null), pickProfile(&candidates, null));
+}
+
+test "pickProfile honors an explicit --channel over recency and capability" {
+    const candidates = [_]ProfileCandidate{
+        cand("a.default", true, true, 900),
+        cand("b.default-nightly", false, true, 100),
+    };
+    // Stated intent wins: the user asked for nightly, so report precisely why
+    // nightly is unusable rather than silently decrypting a different profile.
+    try testing.expectEqual(@as(?usize, 1), pickProfile(&candidates, .nightly));
+}
+
+test "Channel.fromString accepts every advertised channel and rejects junk" {
+    for ([_][]const u8{ "release", "beta", "nightly", "dev", "esr" }) |name| {
+        try testing.expect(Channel.fromString(name) != null);
+    }
+    try testing.expect(Channel.fromString("bogus") == null);
 }
