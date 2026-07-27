@@ -13,11 +13,18 @@ era; `yolo` is now a normal git branch tracking `origin/yolo`. jj is abandoned
 pre-sync commit whose content was verified already present upstream.
 
 **Open:**
-- [ ] **Verify the Darwin leg on the MacBook** (reachable over Tailscale,
-      passwordless ssh — `peters-macbook-pro-m4-max`). The Linux leg of the
-      cross-platform `nix build` is verified static-musl and running; the macOS
-      leg is implemented (native dynamic + `apple-sdk`) but NOT yet built or run
-      on a Mac. Do this before treating cross-platform as done.
+- [ ] **UNEXPLAINED (watch for recurrence):** on the Mac at ~12:47 on 2026-07-27,
+      auto-selection chose the year-stale `jhwe9mqz.default-beta` even though
+      `882i5035.default-nightly` had a directory mtime of that same day
+      (12:35:43 EDT) — a full year newer, so it should have won. Minutes later,
+      with unchanged mtimes, it correctly chose nightly, and it has chosen
+      correctly on every run since. NOT reproduced and NOT explained; three
+      hypotheses were tested and falsified (statFile-on-a-directory failing on
+      macOS, ffpw's own sqlite open bumping the mtime, and iteration-order luck
+      in the test). Do not assume it is fixed. It IS now instrumented: the
+      `else |_| 0` that would have hidden a failed stat is gone, so a recurrence
+      caused by an open/stat error will print `Warning: skipping profile '<name>'`
+      with the errno instead of silently ranking it as epoch 0.
 - [ ] `checks.test` still re-spawns the test binary through Nix's dynamic linker
       (`"$DL" "$bin"`). Now that the *executable* is static musl, consider giving
       the test binary the same treatment and dropping the loader dance. Left
@@ -35,6 +42,31 @@ pre-sync commit whose content was verified already present upstream.
   No ffpw action pending on either.
 
 ## Completed
+
+- [x] **Darwin leg of `nix build` VERIFIED on real hardware** (2026-07-27 13:00
+      EST, `peters-macbook-pro-m4-max`, macOS 26.5 arm64, over Tailscale).
+      `nix build` succeeds; `otool -L` shows exactly ONE dependency,
+      `/usr/lib/libSystem.B.dylib` — no Nix store paths — which is the portable
+      macOS form (Apple ships no static libSystem, so there is no static case to
+      reach for). `./build`, `./test` (31/31 unit, 4/4 CLI, 3/3 build controls)
+      and `./mutate` (6/6) are all green on macOS as well as Linux. Both boxes
+      were also on a leftover jj-era detached HEAD; both now track `origin/yolo`.
+- [x] **Stopped burying errors in profile discovery** (2026-07-27 12:58 EST).
+      `.mtime_ns = if (dir.statFile(...)) |st| ... else |_| 0` mapped a FAILURE
+      onto 0 — a legal mtime for an old directory — so a failed stat was
+      indistinguishable from a genuinely ancient profile and would silently
+      collapse ranking to directory-iteration order. Two sibling swallows did the
+      same (`openDir ... catch continue`; `fileExistsIn`'s `catch return false`,
+      which conflated "no such file" with "permission denied"). Now open/stat
+      failures warn on stderr and skip the candidate, and `fileExistsIn` keeps
+      FileNotFound (a legitimate "no") distinct from real errors (propagate).
+      Peter's rule, now a shared memory: never map an error onto a sentinel that
+      the success path could also produce.
+- [x] **Recency test strengthened to both directions** (2026-07-27). The
+      single-direction assertion could pass by coin flip — if mtime is ignored
+      the winner is whatever the OS enumerates first, and with two candidates
+      that is 50/50. It now flips which profile is newest and asserts both ways,
+      so no fixed iteration order satisfies it.
 
 - [x] **`nix build` is cross-platform and produces a runnable artifact**
       (2026-07-27 12:40 EST). Fixing the glob exposed it: `nix build` emitted a
