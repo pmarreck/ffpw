@@ -55,4 +55,28 @@ else
   run zig build "-Doptimize=$optimize" "$@"
 fi
 
+# A build that installs an unexecutable binary is a failed build, not a warning.
+# `nix build` emitted a dynamically-linked musl binary whose interpreter
+# (/lib/ld-musl-x86_64.so.1) does not exist on NixOS, so `./build` reported
+# success while leaving something that could not run. Exit codes 126/127 are the
+# precise signature of "cannot execute" / "loader not found", so a CLI that
+# merely returns non-zero from --help does not trip this.
+check_runnable() {
+  local exe="$1"
+  # Cross-compiled output is not expected to run on the build host.
+  for a in "$@"; do
+    case "$a" in -Dtarget=*) return 0 ;; esac
+  done
+  [ -e "$exe" ] || { echo "FAILED: $exe was never produced" >&2; exit 1; }
+  # `|| ec=$?` keeps this off the ERR trap: the failure is expected and handled.
+  local ec=0
+  "$exe" --help >/dev/null 2>&1 || ec=$?
+  if [ "$ec" -eq 126 ] || [ "$ec" -eq 127 ]; then
+    printf '\033[31m✗ %s was installed but cannot execute (exit %d).\033[0m\n' "$exe" "$ec" >&2
+    printf '  %s\n' "$(file -b "$exe" 2>/dev/null || echo 'file(1) unavailable')" >&2
+    exit 1
+  fi
+}
+
+check_runnable "zig-out/bin/ffpw" "$@"
 check_on_path

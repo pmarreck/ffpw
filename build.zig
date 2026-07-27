@@ -58,9 +58,20 @@ pub fn build(b: *std.Build) void {
     });
     root_module.addImport("sqlite", sqlite_mod);
 
+    // Link statically against musl so the artifact carries no interpreter at
+    // all. A *dynamically* linked musl binary bakes /lib/ld-musl-x86_64.so.1,
+    // which exists on neither NixOS nor a typical glibc distro — that is how a
+    // "successful" nix build produced something unrunnable. Conditioned on the
+    // ABI, not the OS, so a native glibc `zig build` stays dynamic (statically
+    // linking glibc is its own minefield: NSS still dlopen()s at runtime).
+    //
+    // macOS deliberately has no static case: Apple ships no static libSystem
+    // and forbids fully static executables. Its portable form is a dynamic
+    // binary linking only /usr/lib/libSystem.B.dylib, present on every Mac.
     const exe = b.addExecutable(.{
         .name = "ffpw",
         .root_module = root_module,
+        .linkage = if (target.result.abi.isMusl()) .static else null,
     });
 
     b.installArtifact(exe);

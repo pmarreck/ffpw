@@ -72,42 +72,67 @@ else
 	rc=1
 fi
 
-# ── Build script: must not depend on filesystem globbing ─────────────────
+# ── Build script controls ────────────────────────────────────────────────
 #
-# Peter's shells run with `set -f` (noglob), which propagates into scripts, so a
-# bare `result/bin/*` stays LITERAL and the nix-output install step fails — the
-# fresh build never reaches zig-out/bin. This runs the REAL ./build against a
-# stubbed `nix`, once with globbing OFF (`bash -f`, emulating Peter's machines)
-# and once ON (CI and most other environments), asserting the binary lands in
-# BOTH. The pair is the point: a glob-dependent script still passes the
-# globbing-ON case, so only testing both modes can classify the script.
+# Two properties, both learned the hard way, checked against the REAL ./build
+# with a stubbed `nix` so the suite stays fast:
+#
+# 1. GLOB-INDEPENDENCE. Peter's shells run `set -f` (noglob), which propagates
+#    into scripts, so a bare `result/bin/*` stayed LITERAL and the install step
+#    failed — the fresh build never reached zig-out/bin. Exercised with globbing
+#    OFF (`bash -f`) *and* ON, because a glob-dependent script still passes the
+#    globbing-ON case; only the pair classifies the script correctly.
+#
+# 2. THE INSTALLED BINARY MUST ACTUALLY RUN. Fixing (1) exposed this: `nix build`
+#    emitted a dynamically-linked musl binary whose interpreter does not exist on
+#    NixOS, so a "successful" build installed something unexecutable. A control
+#    that never fires is not a control, so the non-runnable case is exercised
+#    here to prove ./build rejects it rather than assuming it would.
 #
 # USER is overridden so the local-only PATH-hygiene control stays out of it —
-# this test is about the install step, and must not depend on the host's PATH.
-echo "── build script (glob-independence) ──"
+# these are about the install step, not about the host's PATH.
+echo "── build script controls ──"
 build_tmp="$(mktemp -d)"
 mkdir -p "$build_tmp/stub"
 cat > "$build_tmp/stub/nix" <<'STUB'
 #!/usr/bin/env bash
 # Stand-in for `nix build`: materializes ./result -> a store-like dir with bin/.
+# STUB_BROKEN=1 emits an executable whose interpreter does not exist, mimicking
+# a musl-linked binary on a host that has no musl loader.
 mkdir -p "$PWD/_store/bin"
-printf '#!/bin/sh\necho stub\n' > "$PWD/_store/bin/ffpw"
+if [[ "${STUB_BROKEN:-0}" == 1 ]]; then
+	printf '#!/nonexistent/loader\n' > "$PWD/_store/bin/ffpw"
+else
+	printf '#!/bin/sh\necho stub\n' > "$PWD/_store/bin/ffpw"
+fi
 chmod +x "$PWD/_store/bin/ffpw"
 ln -sfn "$PWD/_store" "$PWD/result"
 STUB
 chmod +x "$build_tmp/stub/nix"
 
-for glob_mode in off on; do
-	if [[ "$glob_mode" == off ]]; then sh_flags=(-f); else sh_flags=(); fi
-	work="$build_tmp/run-$glob_mode"
+# label|bash flag|STUB_BROKEN|expect ./build to succeed?
+build_cases=(
+	"installs the nix output with globbing off|-f|0|yes"
+	"installs the nix output with globbing on||0|yes"
+	"rejects an installed binary that cannot execute|-f|1|no"
+)
+for spec in "${build_cases[@]}"; do
+	IFS='|' read -r label flag broken want_ok <<<"$spec"
+	if [[ -n "$flag" ]]; then sh_flags=("$flag"); else sh_flags=(); fi
+	work="$build_tmp/run-$broken-${#sh_flags[@]}"
 	mkdir -p "$work"
-	build_out="$(cd "$work" && PATH="$build_tmp/stub:$PATH" USER=not-peter \
+	build_out="$(cd "$work" && PATH="$build_tmp/stub:$PATH" USER=not-peter STUB_BROKEN="$broken" \
 		bash ${sh_flags[@]+"${sh_flags[@]}"} "$root_dir/build" 2>&1)"
 	build_rc=$?
-	if [[ "$build_rc" -eq 0 && -x "$work/zig-out/bin/ffpw" ]]; then
-		echo "✓ ./build installs the nix output with globbing $glob_mode"
+	if [[ "$want_ok" == yes ]]; then
+		[[ "$build_rc" -eq 0 && -x "$work/zig-out/bin/ffpw" ]] && ok=1 || ok=0
 	else
-		echo "✗ ./build did not install the nix output with globbing $glob_mode (rc=$build_rc)" >&2
+		[[ "$build_rc" -ne 0 ]] && ok=1 || ok=0
+	fi
+	if [[ "$ok" -eq 1 ]]; then
+		echo "✓ ./build $label"
+	else
+		echo "✗ ./build $label (rc=$build_rc)" >&2
 		printf '%s\n' "$build_out" | sed 's/^/    /' >&2
 		rc=1
 	fi

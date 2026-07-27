@@ -12,17 +12,18 @@ era; `yolo` is now a normal git branch tracking `origin/yolo`. jj is abandoned
 (LLM impedance mismatch) — use plain git. Tag `rescue/pre-sync-b390c0f` parks the
 pre-sync commit whose content was verified already present upstream.
 
-**Open — needs Peter's call:**
-- [ ] `nix build` emits a **dynamically-linked musl** binary
-      (interp `/lib/ld-musl-x86_64.so.1`, which does not exist on NixOS), so the
-      artifact `./build` installs into `zig-out/bin/` cannot execute locally;
-      `bin/ffpw` only works because it falls back to a native `zig build`. CI
-      papers over this by re-spawning through an explicit loader (`"$DL" "$bin"`).
-      Recommendation: make the nix build **statically** linked musl — then it runs
-      anywhere, CI drops the loader dance, and `./build`'s install is genuinely
-      usable. Alternative: force a native/glibc nix build.
-- [ ] Add a `./build` control asserting the installed binary actually *executes*
-      (same spirit as the PATH-shadow control) so this class cannot recur silently.
+**Open:**
+- [ ] **Verify the Darwin leg on the MacBook** (reachable over Tailscale,
+      passwordless ssh — `peters-macbook-pro-m4-max`). The Linux leg of the
+      cross-platform `nix build` is verified static-musl and running; the macOS
+      leg is implemented (native dynamic + `apple-sdk`) but NOT yet built or run
+      on a Mac. Do this before treating cross-platform as done.
+- [ ] `checks.test` still re-spawns the test binary through Nix's dynamic linker
+      (`"$DL" "$bin"`). Now that the *executable* is static musl, consider giving
+      the test binary the same treatment and dropping the loader dance. Left
+      alone deliberately for now: changing it risks CI, and it is orthogonal.
+- [ ] ffpw does not accept `--about` (project convention says every CLI must).
+      Unknown args also appear to exit 0 rather than non-zero — worth a test.
 
 **Next steps (optional, nothing blocking):**
 - Extend the e2e key4 test with missing-`nssPrivate`-row and corrupted-blob
@@ -34,6 +35,24 @@ pre-sync commit whose content was verified already present upstream.
   No ffpw action pending on either.
 
 ## Completed
+
+- [x] **`nix build` is cross-platform and produces a runnable artifact**
+      (2026-07-27 12:40 EST). Fixing the glob exposed it: `nix build` emitted a
+      *dynamically linked musl* binary (interp `/lib/ld-musl-x86_64.so.1`,
+      present on neither NixOS nor a glibc distro), so a "successful" build
+      installed something that could not execute — `bin/ffpw` only worked by
+      falling back to a native `zig build`, and CI papered over it by re-spawning
+      through an explicit loader. Root fix: make the target EXPLICIT instead of
+      relying on Zig's in-sandbox native detection. `flake.nix` passes
+      `-Dtarget=<arch>-linux-musl` on Linux and nothing on Darwin; `build.zig`
+      links statically iff the ABI is musl (so a native glibc `zig build` stays
+      dynamic — statically linked glibc still dlopen()s NSS). macOS has no static
+      case at all: Apple ships no static libSystem, so its portable form is the
+      native dynamic build against `/usr/lib/libSystem.B.dylib`. The Linux
+      artifact is now `statically linked`, runs directly, and the flake asserts
+      no INTERP segment survives. Control added to `./build` (exit 126/127 ⇒ hard
+      fail), and the suite exercises the NON-runnable case so the control is
+      proven to fire rather than assumed to.
 
 - [x] **Profile selection is capability-based, not name-based** (2026-07-27
       11:00 EST). Reported: `ffpw amazon.com` → "Missing logins.json in profile

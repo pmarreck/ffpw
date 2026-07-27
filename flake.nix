@@ -42,13 +42,29 @@
             path = zig-sqlite-src;
           }
         ];
+
+        # Make the build target EXPLICIT rather than relying on Zig's native
+        # detection, which inside the Nix sandbox silently resolved to musl and
+        # produced a *dynamically* linked musl binary — one whose interpreter
+        # (/lib/ld-musl-x86_64.so.1) exists on neither NixOS nor a typical glibc
+        # distro. build.zig links statically whenever the ABI is musl, so on
+        # Linux this yields a genuinely portable, interpreter-free binary.
+        #
+        # macOS gets no target flag: Apple ships no static libSystem and forbids
+        # fully static executables, so its portable form is the native dynamic
+        # build against /usr/lib/libSystem.B.dylib, present on every Mac.
+        zigTargetFlag = pkgs.lib.optionalString pkgs.stdenv.isLinux
+          "-Dtarget=${pkgs.stdenv.hostPlatform.parsed.cpu.name}-linux-musl";
+
+        # Darwin needs the SDK for libSystem headers (sqlite3.c pulls in libc).
+        darwinInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.apple-sdk ];
       in {
         packages.default = pkgs.stdenv.mkDerivation {
           pname = "ffpw";
           version = "0.1.0";
           src = ./.;
 
-          nativeBuildInputs = [ zigPkg ];
+          nativeBuildInputs = [ zigPkg ] ++ darwinInputs;
 
           dontConfigure = true;
           dontFixup = true;
@@ -60,8 +76,19 @@
 
             zig build \
               --system ${zigPkgCache} \
+              ${zigTargetFlag} \
               -Doptimize=ReleaseFast \
               --color off
+
+            # The artifact must be self-contained. On Linux a leftover INTERP
+            # segment means the static link silently did not happen.
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+            if readelf -l zig-out/bin/ffpw 2>/dev/null | grep -q INTERP; then
+              echo "ffpw is dynamically linked; expected a static musl binary" >&2
+              readelf -l zig-out/bin/ffpw | grep -A1 INTERP >&2
+              exit 1
+            fi
+            ''}
           '';
 
           installPhase = ''
