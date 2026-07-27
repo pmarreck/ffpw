@@ -72,4 +72,47 @@ else
 	rc=1
 fi
 
+# ── Build script: must not depend on filesystem globbing ─────────────────
+#
+# Peter's shells run with `set -f` (noglob), which propagates into scripts, so a
+# bare `result/bin/*` stays LITERAL and the nix-output install step fails — the
+# fresh build never reaches zig-out/bin. This runs the REAL ./build against a
+# stubbed `nix`, once with globbing OFF (`bash -f`, emulating Peter's machines)
+# and once ON (CI and most other environments), asserting the binary lands in
+# BOTH. The pair is the point: a glob-dependent script still passes the
+# globbing-ON case, so only testing both modes can classify the script.
+#
+# USER is overridden so the local-only PATH-hygiene control stays out of it —
+# this test is about the install step, and must not depend on the host's PATH.
+echo "── build script (glob-independence) ──"
+build_tmp="$(mktemp -d)"
+mkdir -p "$build_tmp/stub"
+cat > "$build_tmp/stub/nix" <<'STUB'
+#!/usr/bin/env bash
+# Stand-in for `nix build`: materializes ./result -> a store-like dir with bin/.
+mkdir -p "$PWD/_store/bin"
+printf '#!/bin/sh\necho stub\n' > "$PWD/_store/bin/ffpw"
+chmod +x "$PWD/_store/bin/ffpw"
+ln -sfn "$PWD/_store" "$PWD/result"
+STUB
+chmod +x "$build_tmp/stub/nix"
+
+for glob_mode in off on; do
+	if [[ "$glob_mode" == off ]]; then sh_flags=(-f); else sh_flags=(); fi
+	work="$build_tmp/run-$glob_mode"
+	mkdir -p "$work"
+	build_out="$(cd "$work" && PATH="$build_tmp/stub:$PATH" USER=not-peter \
+		bash ${sh_flags[@]+"${sh_flags[@]}"} "$root_dir/build" 2>&1)"
+	build_rc=$?
+	if [[ "$build_rc" -eq 0 && -x "$work/zig-out/bin/ffpw" ]]; then
+		echo "✓ ./build installs the nix output with globbing $glob_mode"
+	else
+		echo "✗ ./build did not install the nix output with globbing $glob_mode (rc=$build_rc)" >&2
+		printf '%s\n' "$build_out" | sed 's/^/    /' >&2
+		rc=1
+	fi
+done
+# Our own mktemp -d under TMPDIR (RAM); nothing user-owned lives here.
+rm -rf "$build_tmp"
+
 exit "$rc"

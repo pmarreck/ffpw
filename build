@@ -46,7 +46,11 @@ if [[ "$optimize" != "ReleaseFast" ]]; then
 elif command -v nix >/dev/null 2>&1; then
   run nix build "$@"
   mkdir -p zig-out/bin
-  run install -m755 result/bin/* zig-out/bin/
+  # `find`, not `result/bin/*`: Peter's shells run noglob (`set -f`), which
+  # propagates into scripts and would leave the pattern literal. This is also
+  # correct for an empty/missing bin dir (loud failure) and follows `result`,
+  # which is a symlink into the nix store.
+  run find -L result/bin -maxdepth 1 -type f -perm -u+x -exec install -m755 "{}" zig-out/bin/ ";"
 else
   run zig build "-Doptimize=$optimize" "$@"
 fi
