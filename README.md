@@ -30,26 +30,32 @@ you'll be prompted to specify `--channel` or `--profile`.
 
 ## Development
 
-Enter the dev shell:
+Build the release artifact:
 
 ```
-nix develop
+./build
+# Equivalent Nix entry point:
+nix build
 ```
 
-Build and run:
+Both commands update Nix's `result` link. The tracked relative symlink
+`bin -> result/bin` makes the resulting `bin/ffpw` available through the
+project's PATH entry. On Linux this is the statically linked musl build.
+
+For native development builds:
 
 ```
-zig build
-zig build run -- --help
+nix develop -c zig build
 ```
 
 Run tests:
 
 ```
-bin/test/ffpw_test
+./test
 ```
 
 ## Architecture
 
-Pure Zig implementation — no NSS/NSPR dependency. The binary links only against
-`/usr/lib/libSystem.B.dylib` on macOS. Just `zig build` produces a fully portable executable.
+Pure Zig implementation with no NSS/NSPR dependency. The canonical Nix build is
+fully static on Linux. On macOS it links only against Apple's system-provided
+`/usr/lib/libSystem.B.dylib`; Apple does not provide a static `libSystem`.

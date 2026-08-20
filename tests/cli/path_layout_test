@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+set -u
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+expected_target="result/bin"
+actual_target="$(readlink "$root_dir/bin" 2>/dev/null || true)"
+
+if [[ -L "$root_dir/bin" && "$actual_target" == "$expected_target" ]]; then
+	printf '✓ project bin resolves through the Nix result link\n'
+	exit 0
+fi
+
+printf '✗ expected bin -> %s; found %s\n' \
+	"$expected_target" "${actual_target:-a non-symlink directory}" >&2
+exit 1

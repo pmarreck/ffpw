@@ -11,13 +11,14 @@ run() {
   }
 }
 
-# Local-only PATH-hygiene control (Peter's machines only): after a successful
-# build, confirm the `ffpw` your shell resolves is THIS repo's — its wrapper,
-# the raw binary, or a symlink into the repo — not a stale/foreign one shadowing
-# the fresh build, or nothing at all. A recurring footgun: building one binary
-# while running another. Gated on $USER so it NEVER runs in CI (which uses
-# `nix build`, never this script, as user `runner`/`nixbld`). Non-fatal — a PATH
-# misconfig is worth a loud warning, not a broken build.
+# Local-only PATH-hygiene control (Peter's machines only). After a successful
+# build, confirm that the `ffpw` command routes through this repo's `bin` entry
+# or resolves to another in-repo artifact. This catches building one binary
+# while running a stale or foreign one. Gated on $USER so it NEVER runs in CI,
+# which uses `nix build` as user `runner`/`nixbld`. `bin/ffpw` intentionally
+# routes through `result` into /nix/store, so recognize that lexical project
+# path before canonicalization erases it. A PATH misconfiguration warns without
+# failing the build.
 check_on_path() {
   [ "${USER:-}" = "pmarreck" ] || return 0
   local tool="ffpw" here resolved real
@@ -28,9 +29,13 @@ check_on_path() {
     return 0
   fi
   real="$(realpath "$resolved" 2>/dev/null || readlink -f "$resolved" 2>/dev/null || printf '%s' "$resolved")"
+  if [ "$resolved" = "$here/bin/$tool" ]; then
+    printf '\033[32m✓ %s on PATH → bin/%s → %s\033[0m\n' "$tool" "$tool" "$real" >&2
+    return 0
+  fi
   case "$real" in
     "$here"/*) printf '\033[32m✓ %s on PATH → %s (this build)\033[0m\n' "$tool" "${real#"$here"/}" >&2 ;;
-    *) printf '\033[33m⚠ `%s` on PATH resolves to %s — OUTSIDE this repo; it may be shadowing your fresh build at %s/zig-out/bin/%s.\033[0m\n' "$tool" "$real" "$here" "$tool" >&2 ;;
+    *) printf '\033[33m⚠ `%s` on PATH resolves to %s — OUTSIDE this repo; it may be shadowing your fresh build at %s/bin/%s.\033[0m\n' "$tool" "$real" "$here" "$tool" >&2 ;;
   esac
 }
 

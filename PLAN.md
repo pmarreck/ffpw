@@ -43,6 +43,20 @@ pre-sync commit whose content was verified already present upstream.
 
 ## Completed
 
+- [x] **Made the flake-built release artifact the PATH-facing `ffpw`**
+      (2026-08-20 11:23 EDT). Root cause: the tracked `bin/ffpw` development
+      launcher rebuilt when source mtimes exceeded `zig-out/bin/ffpw`, requiring
+      Zig at invocation time and bypassing the static Nix artifact. Replaced the
+      launcher and directory with the tracked relative symlink
+      `bin -> result/bin`, so plain `nix build` and default `./build` expose the
+      immutable package output through the project's existing PATH entry. Moved
+      CLI tests to `tests/cli/`; added a red-then-green topology regression and a
+      stubbed external-Nix-store control; fixed `./build`'s PATH check to accept
+      the project route after canonicalization reaches `/nix/store`. Verified
+      31/31 Zig tests, 4/4 CLI tests, all four build controls, real `nix build`,
+      real `./build`, the canonical Nix check with its 31/31 meta-control,
+      static ELF linkage, no ELF interpreter, and 6/6 caught mutants.
+
 - [x] **Darwin leg of `nix build` VERIFIED on real hardware** (2026-07-27 13:00
       EST, `peters-macbook-pro-m4-max`, macOS 26.5 arm64, over Tailscale).
       `nix build` succeeds; `otool -L` shows exactly ONE dependency,

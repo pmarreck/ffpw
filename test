@@ -65,7 +65,14 @@ else
 fi
 
 echo "── CLI shell tests ──"
-if bash bin/test/ffpw_test; then
+if bash tests/cli/path_layout_test; then
+	echo "✓ PATH layout tests passed"
+else
+	echo "✗ PATH layout tests failed" >&2
+	rc=1
+fi
+
+if bash tests/cli/ffpw_test; then
 	echo "✓ CLI tests passed"
 else
 	echo "✗ CLI tests failed" >&2
@@ -74,14 +81,15 @@ fi
 
 # ── Build script controls ────────────────────────────────────────────────
 #
-# Two properties, both learned the hard way, checked against the REAL ./build
+# Three properties, all learned the hard way, checked against the REAL ./build
 # with a stubbed `nix` so the suite stays fast:
 #
-# 1. GLOB-INDEPENDENCE. Peter's shells run `set -f` (noglob), which propagates
-#    into scripts, so a bare `result/bin/*` stayed LITERAL and the install step
-#    failed — the fresh build never reached zig-out/bin. Exercised with globbing
-#    OFF (`bash -f`) *and* ON, because a glob-dependent script still passes the
-#    globbing-ON case; only the pair classifies the script correctly.
+# 1. GLOB-INDEPENDENCE + PATH AVAILABILITY. Peter's shells run `set -f`
+#    (noglob), which propagates into scripts, so a bare `result/bin/*` stayed
+#    LITERAL and the install step failed. The successful cases assert both the
+#    zig-out copy and the project `bin -> result/bin` PATH route. Exercised with
+#    globbing OFF (`bash -f`) *and* ON, because a glob-dependent script still
+#    passes the globbing-ON case; only the pair classifies the script correctly.
 #
 # 2. THE INSTALLED BINARY MUST ACTUALLY RUN. Fixing (1) exposed this: `nix build`
 #    emitted a dynamically-linked musl binary whose interpreter does not exist on
@@ -89,8 +97,12 @@ fi
 #    that never fires is not a control, so the non-runnable case is exercised
 #    here to prove ./build rejects it rather than assuming it would.
 #
-# USER is overridden so the local-only PATH-hygiene control stays out of it —
-# these are about the install step, not about the host's PATH.
+# 3. PATH ROUTING THROUGH NIX STORE. The project `bin` entry points through
+#    `result` into /nix/store. The local PATH check must accept that lexical
+#    project route even though its canonical target is outside the checkout.
+#
+# USER is overridden for the first three cases so the local-only PATH check does
+# not obscure their install assertions. The final case enables it deliberately.
 echo "── build script controls ──"
 build_tmp="$(mktemp -d)"
 mkdir -p "$build_tmp/stub"
@@ -99,14 +111,15 @@ cat > "$build_tmp/stub/nix" <<'STUB'
 # Stand-in for `nix build`: materializes ./result -> a store-like dir with bin/.
 # STUB_BROKEN=1 emits an executable whose interpreter does not exist, mimicking
 # a musl-linked binary on a host that has no musl loader.
-mkdir -p "$PWD/_store/bin"
+store="${STUB_STORE:-$PWD/_store}"
+mkdir -p "$store/bin"
 if [[ "${STUB_BROKEN:-0}" == 1 ]]; then
-	printf '#!/nonexistent/loader\n' > "$PWD/_store/bin/ffpw"
+	printf '#!/nonexistent/loader\n' > "$store/bin/ffpw"
 else
-	printf '#!/bin/sh\necho stub\n' > "$PWD/_store/bin/ffpw"
+	printf '#!/bin/sh\necho stub\n' > "$store/bin/ffpw"
 fi
-chmod +x "$PWD/_store/bin/ffpw"
-ln -sfn "$PWD/_store" "$PWD/result"
+chmod +x "$store/bin/ffpw"
+ln -sfn "$store" "$PWD/result"
 STUB
 chmod +x "$build_tmp/stub/nix"
 
@@ -121,11 +134,12 @@ for spec in "${build_cases[@]}"; do
 	if [[ -n "$flag" ]]; then sh_flags=("$flag"); else sh_flags=(); fi
 	work="$build_tmp/run-$broken-${#sh_flags[@]}"
 	mkdir -p "$work"
+	ln -s result/bin "$work/bin"
 	build_out="$(cd "$work" && PATH="$build_tmp/stub:$PATH" USER=not-peter STUB_BROKEN="$broken" \
 		bash ${sh_flags[@]+"${sh_flags[@]}"} "$root_dir/build" 2>&1)"
 	build_rc=$?
 	if [[ "$want_ok" == yes ]]; then
-		[[ "$build_rc" -eq 0 && -x "$work/zig-out/bin/ffpw" ]] && ok=1 || ok=0
+		[[ "$build_rc" -eq 0 && -x "$work/zig-out/bin/ffpw" && -x "$work/bin/ffpw" ]] && ok=1 || ok=0
 	else
 		[[ "$build_rc" -ne 0 ]] && ok=1 || ok=0
 	fi
@@ -137,6 +151,27 @@ for spec in "${build_cases[@]}"; do
 		rc=1
 	fi
 done
+
+# The project PATH entry is a relative symlink through Nix's `result`, whose
+# canonical target necessarily lives outside the repository in /nix/store.
+# PATH hygiene must recognize the selected in-repo route without mistaking its
+# immutable destination for a foreign binary.
+path_work="$build_tmp/path-route"
+mkdir -p "$path_work"
+cp "$root_dir/build" "$path_work/build"
+ln -s result/bin "$path_work/bin"
+path_out="$(cd "$path_work" && \
+	PATH="$path_work/bin:$build_tmp/stub:$PATH" \
+	USER=pmarreck STUB_STORE="$build_tmp/external-store" \
+	bash ./build 2>&1)"
+path_rc=$?
+if [[ "$path_rc" -eq 0 && "$path_out" == *"✓ ffpw on PATH"* && "$path_out" != *"OUTSIDE"* ]]; then
+	echo "✓ ./build accepts the project bin route into the Nix store"
+else
+	echo "✗ ./build rejected the project bin route into the Nix store (rc=$path_rc)" >&2
+	printf '%s\n' "$path_out" | sed 's/^/    /' >&2
+	rc=1
+fi
 # Our own mktemp -d under TMPDIR (RAM); nothing user-owned lives here.
 rm -rf "$build_tmp"
 
