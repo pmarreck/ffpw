@@ -1,11 +1,13 @@
 # Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
 ver=1.2
 annotate=[
-	bin = Relative symlink to Nix result/bin; PATH-facing release artifacts
+	bin = Real PATH-discovered directory; ffpw symlinks to the Nix release result
+	bin/ffpw = Relative symlink to ../result/bin/ffpw; stable PATH-facing release executable
 	build = Flake-driven release builder; verifies runnable output and PATH routing
 	mutate = Mutation-testing harness: injects known faults, asserts ./test goes red for each (awk-based literal replace)
-	test = Full suite runner: Zig meta-control, CLI tests, and build/PATH controls
+	test = Full suite runner; Nix checks use --no-link to preserve the release result
 	tests/cli = Bash CLI and PATH-layout regression suites
 	tests/cli/ffpw_test = CLI behavior tests using isolated synthetic Firefox profiles
-	tests/cli/path_layout_test = Pins bin -> result/bin so invocation never auto-builds
+	tests/cli/nix_test_link_test = Fake-Nix regression proving check builds preserve the release result link
+	tests/cli/path_layout_test = Asserts real bin directory and relative ffpw link through the Nix result
 ]

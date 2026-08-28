@@ -1,6 +1,6 @@
 # ffpw — Plan / TODO
 
-## Current state (2026-07-27, first session on thelio-nixos)
+## Current state (2026-08-28, thelio-nixos)
 
 **GREEN.** `./test` prints `31/31 authored tests executed` + CLI + build-script
 suites; `./mutate` prints `6/6 caught`. Warm `./test` is ~1.7s (a cold Zig cache
@@ -13,6 +13,12 @@ era; `yolo` is now a normal git branch tracking `origin/yolo`. jj is abandoned
 pre-sync commit whose content was verified already present upstream.
 
 **Open:**
+- [ ] **Peter's shell alias explicitly selects Firefox Nightly, whose profile
+      has no `logins.json`.** A fresh login shell expands bare `ffpw` to
+      `ffpw --channel nightly`; the current Nightly profile has `key4.db` but no
+      `logins.json`, while the usable default profile has both. Decide whether
+      to remove/update the dotfiles alias, change explicit-channel selection to
+      fall back silently, or retain strict selection and improve the diagnostic.
 - [ ] **UNEXPLAINED (watch for recurrence):** on the Mac at ~12:47 on 2026-07-27,
       auto-selection chose the year-stale `jhwe9mqz.default-beta` even though
       `882i5035.default-nightly` had a directory mtime of that same day
@@ -42,6 +48,19 @@ pre-sync commit whose content was verified already present upstream.
   No ffpw action pending on either.
 
 ## Completed
+
+- [x] **Stopped Nix tests from breaking the PATH-facing release** (2026-08-28
+      15:00 EDT). `./test nix` had replaced Nix's default `result` link with the
+      `ffpw-test` check output, which has no `bin/ffpw`; the whole-directory
+      `bin -> result/bin` link then dangled and the existing shell fell through
+      to `zig-out/bin/ffpw`. A red isolated fake-Nix test proved the clobber;
+      `./test nix` now passes `--no-link`. Replaced the directory symlink with a
+      real `bin/` containing `ffpw -> ../result/bin/ffpw`, so Peter's startup
+      PATH discovery sees the project `bin/` even if `result` was absent when
+      the shell started, and ranks it ahead of `zig-out/bin`. Verified the full
+      local suite, a real 31/31-test `./test nix` with an unchanged release link,
+      a fresh release build, static ELF linkage with no interpreter, and 6/6
+      caught mutants. No real credential query was run.
 
 - [x] **Made the flake-built release artifact the PATH-facing `ffpw`**
       (2026-08-20 11:23 EDT). Root cause: the tracked `bin/ffpw` development

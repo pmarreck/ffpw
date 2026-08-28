@@ -39,8 +39,9 @@ nix build
 ```
 
 Both commands update Nix's `result` link. The tracked relative symlink
-`bin -> result/bin` makes the resulting `bin/ffpw` available through the
-project's PATH entry. On Linux this is the statically linked musl build.
+`bin/ffpw -> ../result/bin/ffpw` makes the release available through the real
+project `bin/` directory discovered by Peter's PATH configuration. On Linux
+this is the statically linked musl build.
 
 For native development builds:
 

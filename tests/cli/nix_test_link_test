@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+
+set -u
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+test_tmp="$(mktemp -d "${TMPDIR%/}/ffpw-nix-link.XXXXXX")"
+project="$test_tmp/project"
+stub_dir="$test_tmp/stub"
+release_output="$test_tmp/release-output"
+check_output="$test_tmp/check-output"
+build_marker="$test_tmp/build-ran"
+
+mkdir -p "$project" "$stub_dir" "$release_output/bin" "$check_output"
+cp "$root_dir/test" "$project/test"
+ln -s "$release_output" "$project/result"
+
+cat > "$stub_dir/nix" <<'STUB'
+#!/usr/bin/env bash
+
+if [[ "${1:-}" == "eval" ]]; then
+	printf 'x86_64-linux'
+	exit 0
+fi
+
+if [[ "${1:-}" == "build" ]]; then
+	: > "$STUB_BUILD_MARKER"
+	no_link=0
+	for arg in "$@"; do
+		[[ "$arg" == "--no-link" ]] && no_link=1
+	done
+	if [[ "$no_link" -eq 0 ]]; then
+		ln -sfn "$STUB_CHECK_OUTPUT" "$PWD/result"
+	fi
+	exit 0
+fi
+
+printf 'unexpected nix command: %s\n' "${1:-<none>}" >&2
+exit 2
+STUB
+chmod +x "$stub_dir/nix"
+
+before="$(readlink "$project/result")"
+runner_output="$(cd "$project" && \
+	PATH="$stub_dir:$PATH" \
+	STUB_BUILD_MARKER="$build_marker" \
+	STUB_CHECK_OUTPUT="$check_output" \
+	bash ./test nix 2>&1)"
+runner_rc=$?
+after="$(readlink "$project/result")"
+
+ok=0
+if [[ "$runner_rc" -eq 0 && -f "$build_marker" && "$after" == "$before" ]]; then
+	ok=1
+fi
+
+if [[ "$ok" -eq 1 ]]; then
+	printf '✓ Nix checks preserve the release result link\n'
+else
+	printf '✗ Nix checks replaced result: before=%s after=%s rc=%d build_ran=%s\n' \
+		"$before" "$after" "$runner_rc" "$([[ -f "$build_marker" ]] && printf yes || printf no)" >&2
+	[[ -z "$runner_output" ]] || printf '%s\n' "$runner_output" | sed 's/^/    /' >&2
+fi
+
+# The directory was created under TMPDIR, which Peter configures as RAM-backed.
+rm -rf "$test_tmp"
+exit "$((1 - ok))"

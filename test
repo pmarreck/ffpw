@@ -16,7 +16,8 @@
 #
 # CI's Linux leg additionally re-spawns the binary through Nix's dynamic linker
 # via `nix build .#checks.<system>.test`. Run `./test nix` for that exact
-# sandboxed, host-independent check locally.
+# sandboxed, host-independent check locally. The check uses `--no-link` so it
+# cannot replace the release artifact behind the project's PATH-facing symlink.
 #
 # No `set -e` — sub-suite failures are accumulated (rc OR) so one failing suite
 # never masks or aborts the others.
@@ -27,7 +28,7 @@ cd "$root_dir"
 
 if [[ "${1:-}" == "nix" ]]; then
 	system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
-	exec nix build ".#checks.${system}.test" --print-build-logs
+	exec nix build ".#checks.${system}.test" --print-build-logs --no-link
 fi
 
 rc=0
@@ -65,6 +66,13 @@ else
 fi
 
 echo "── CLI shell tests ──"
+if bash tests/cli/nix_test_link_test; then
+	echo "✓ Nix result-link tests passed"
+else
+	echo "✗ Nix result-link tests failed" >&2
+	rc=1
+fi
+
 if bash tests/cli/path_layout_test; then
 	echo "✓ PATH layout tests passed"
 else
@@ -87,9 +95,10 @@ fi
 # 1. GLOB-INDEPENDENCE + PATH AVAILABILITY. Peter's shells run `set -f`
 #    (noglob), which propagates into scripts, so a bare `result/bin/*` stayed
 #    LITERAL and the install step failed. The successful cases assert both the
-#    zig-out copy and the project `bin -> result/bin` PATH route. Exercised with
-#    globbing OFF (`bash -f`) *and* ON, because a glob-dependent script still
-#    passes the globbing-ON case; only the pair classifies the script correctly.
+#    zig-out copy and the project `bin/ffpw -> ../result/bin/ffpw` PATH route.
+#    Exercised with globbing OFF (`bash -f`) *and* ON, because a glob-dependent
+#    script still passes the globbing-ON case; only the pair classifies the
+#    script correctly.
 #
 # 2. THE INSTALLED BINARY MUST ACTUALLY RUN. Fixing (1) exposed this: `nix build`
 #    emitted a dynamically-linked musl binary whose interpreter does not exist on
@@ -133,8 +142,8 @@ for spec in "${build_cases[@]}"; do
 	IFS='|' read -r label flag broken want_ok <<<"$spec"
 	if [[ -n "$flag" ]]; then sh_flags=("$flag"); else sh_flags=(); fi
 	work="$build_tmp/run-$broken-${#sh_flags[@]}"
-	mkdir -p "$work"
-	ln -s result/bin "$work/bin"
+	mkdir -p "$work/bin"
+	ln -s ../result/bin/ffpw "$work/bin/ffpw"
 	build_out="$(cd "$work" && PATH="$build_tmp/stub:$PATH" USER=not-peter STUB_BROKEN="$broken" \
 		bash ${sh_flags[@]+"${sh_flags[@]}"} "$root_dir/build" 2>&1)"
 	build_rc=$?
@@ -152,14 +161,14 @@ for spec in "${build_cases[@]}"; do
 	fi
 done
 
-# The project PATH entry is a relative symlink through Nix's `result`, whose
-# canonical target necessarily lives outside the repository in /nix/store.
-# PATH hygiene must recognize the selected in-repo route without mistaking its
-# immutable destination for a foreign binary.
+# The project PATH executable is a relative symlink through Nix's `result`,
+# whose canonical target necessarily lives outside the repository in
+# /nix/store. PATH hygiene must recognize the selected in-repo route without
+# mistaking its immutable destination for a foreign binary.
 path_work="$build_tmp/path-route"
-mkdir -p "$path_work"
+mkdir -p "$path_work/bin"
 cp "$root_dir/build" "$path_work/build"
-ln -s result/bin "$path_work/bin"
+ln -s ../result/bin/ffpw "$path_work/bin/ffpw"
 path_out="$(cd "$path_work" && \
 	PATH="$path_work/bin:$build_tmp/stub:$PATH" \
 	USER=pmarreck STUB_STORE="$build_tmp/external-store" \

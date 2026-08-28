@@ -4,14 +4,15 @@ set -u
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-expected_target="result/bin"
-actual_target="$(readlink "$root_dir/bin" 2>/dev/null || true)"
+expected_target="../result/bin/ffpw"
+actual_target="$(readlink "$root_dir/bin/ffpw" 2>/dev/null || true)"
 
-if [[ -L "$root_dir/bin" && "$actual_target" == "$expected_target" ]]; then
-	printf '✓ project bin resolves through the Nix result link\n'
+if [[ -d "$root_dir/bin" && ! -L "$root_dir/bin" && -L "$root_dir/bin/ffpw" && "$actual_target" == "$expected_target" ]]; then
+	printf '✓ project bin executable resolves through the Nix result link\n'
 	exit 0
 fi
 
-printf '✗ expected bin -> %s; found %s\n' \
-	"$expected_target" "${actual_target:-a non-symlink directory}" >&2
+printf '✗ expected real bin/ with ffpw -> %s; found bin=%s ffpw=%s\n' \
+	"$expected_target" "$([[ -L "$root_dir/bin" ]] && printf symlink || printf directory)" \
+	"${actual_target:-missing or non-symlink}" >&2
 exit 1
