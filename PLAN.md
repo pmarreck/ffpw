@@ -13,12 +13,6 @@ era; `yolo` is now a normal git branch tracking `origin/yolo`. jj is abandoned
 pre-sync commit whose content was verified already present upstream.
 
 **Open:**
-- [ ] **Peter's shell alias explicitly selects Firefox Nightly, whose profile
-      has no `logins.json`.** A fresh login shell expands bare `ffpw` to
-      `ffpw --channel nightly`; the current Nightly profile has `key4.db` but no
-      `logins.json`, while the usable default profile has both. Decide whether
-      to remove/update the dotfiles alias, change explicit-channel selection to
-      fall back silently, or retain strict selection and improve the diagnostic.
 - [ ] **UNEXPLAINED (watch for recurrence):** on the Mac at ~12:47 on 2026-07-27,
       auto-selection chose the year-stale `jhwe9mqz.default-beta` even though
       `882i5035.default-nightly` had a directory mtime of that same day
@@ -48,6 +42,18 @@ pre-sync commit whose content was verified already present upstream.
   No ffpw action pending on either.
 
 ## Completed
+
+- [x] **Removed the dotfiles alias that forced Firefox Nightly** (2026-09-06
+      11:48 EDT). Peter chose to preserve ffpw's strict explicit-channel
+      semantics and remove the implicit `--channel nightly` from `.aliases`.
+      The new isolated source test failed first with the exact alias, then
+      passed after its one-line removal; it independently witnesses that late
+      alias definitions were reached so a source failure cannot pass vacuously.
+      A fresh login shell has no `ffpw` alias and resolves this project's
+      `bin/ffpw` first. Dotfiles commit `99d3362` passed 184 host test files,
+      137 hermetic Nix test files, two independent 184-test pre-push gates,
+      push equality, and exact-commit Mechatron CI. Explicit
+      `ffpw --channel nightly` remains available. No real credential query ran.
 
 - [x] **Stopped Nix tests from breaking the PATH-facing release** (2026-08-28
       15:00 EDT). `./test nix` had replaced Nix's default `result` link with the
