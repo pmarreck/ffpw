@@ -466,7 +466,7 @@ fn reportError(io: std.Io, err: anyerror) !void {
         error.MissingPasswordEntry => try err_writer.interface.writeAll("key4.db missing password entry in metadata.\n"),
         error.WrongMasterPassword => try err_writer.interface.writeAll("Master password verification failed.\n"),
         error.MissingPrivateKey => try err_writer.interface.writeAll("key4.db missing private key entry.\n"),
-        error.InvalidMasterKey => try err_writer.interface.writeAll("Failed to extract master key from key4.db.\n"),
+        error.InvalidMasterKey, error.InvalidPrivateKeyBlob => try err_writer.interface.writeAll("Failed to extract master key from key4.db.\n"),
         error.DecryptFailed => try err_writer.interface.writeAll("Failed to decrypt login entry.\n"),
         else => try err_writer.interface.print("Unexpected error: {s}\n", .{@errorName(err)}),
     }

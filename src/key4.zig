@@ -59,13 +59,18 @@ pub const KeyStore = struct {
         var iter = stmt.iterator(PrivRow, .{}) catch return error.MissingPrivateKey;
 
         var found_any = false;
+        var found_malformed = false;
         while (iter.nextAlloc(a, .{}) catch null) |priv| {
             found_any = true;
-            const master_key = extractMasterKey(global_salt, master_password, priv.a11) catch continue;
+            const master_key = extractMasterKey(global_salt, master_password, priv.a11) catch |err| {
+                if (err == error.InvalidPrivateKeyBlob) found_malformed = true;
+                continue;
+            };
             return KeyStore{ .master_key = master_key };
         }
 
-        return if (found_any) error.InvalidMasterKey else error.MissingPrivateKey;
+        if (!found_any) return error.MissingPrivateKey;
+        return if (found_malformed) error.InvalidPrivateKeyBlob else error.InvalidMasterKey;
     }
 
     fn extractMasterKey(
@@ -73,7 +78,7 @@ pub const KeyStore = struct {
         master_password: []const u8,
         a11: []const u8,
     ) ![crypto.key_len]u8 {
-        const key_params = try der.parsePbes2(a11);
+        const key_params = der.parsePbes2(a11) catch return error.InvalidPrivateKeyBlob;
         const mk_key = crypto.deriveKey(global_salt, master_password, key_params.entry_salt, key_params.iterations) catch return error.InvalidMasterKey;
 
         if (key_params.iv.len != crypto.block_len) return error.InvalidIvLength;
@@ -226,6 +231,67 @@ fn buildPbes2Blob(out: []u8, entry_salt: []const u8, iterations: u32, iv: []cons
     var w = TlvWriter{ .buf = out };
     w.tlv(0x30, outer.slice());
     return w.slice();
+}
+
+fn createTestKey4Db(allocator: std.mem.Allocator, dir_path: []const u8, private_blob: ?[]const u8) !void {
+    const global_salt = "global-salt-20-bytes";
+    const entry_salt = "metadata-salt-16";
+    var iv: [crypto.block_len]u8 = undefined;
+    @memcpy(&iv, "iv-metadata-1234"[0..crypto.block_len]);
+
+    const key = try crypto.deriveKey(global_salt, "", entry_salt, 1);
+    var ciphertext: [64]u8 = undefined;
+    const ciphertext_len = try crypto.aes256CbcEncrypt(&ciphertext, "password-check", iv, key);
+    var metadata_blob_buf: [256]u8 = undefined;
+    const metadata_blob = buildPbes2Blob(
+        &metadata_blob_buf,
+        entry_salt,
+        1,
+        &iv,
+        ciphertext[0..ciphertext_len],
+    );
+
+    const key4_path = try std.fs.path.join(allocator, &.{ dir_path, "key4.db" });
+    defer allocator.free(key4_path);
+    const key4_pathz = try allocator.dupeZ(u8, key4_path);
+    defer allocator.free(key4_pathz);
+
+    var db = try sqlite.Db.init(.{
+        .mode = .{ .File = key4_pathz },
+        .open_flags = .{ .write = true, .create = true },
+    });
+    defer db.deinit();
+    try db.exec("CREATE TABLE metadata (id TEXT, item1 BLOB, item2 BLOB)", .{}, .{});
+    try db.exec("INSERT INTO metadata (id, item1, item2) VALUES ('password', ?, ?)", .{}, .{ sqlite.Blob{ .data = global_salt }, sqlite.Blob{ .data = metadata_blob } });
+    try db.exec("CREATE TABLE nssPrivate (a11 BLOB)", .{}, .{});
+    if (private_blob) |blob| {
+        try db.exec("INSERT INTO nssPrivate (a11) VALUES (?)", .{}, .{sqlite.Blob{ .data = blob }});
+    }
+}
+
+test "KeyStore.open reports a missing nssPrivate row" {
+    const a = testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer a.free(dir_path);
+
+    try createTestKey4Db(a, dir_path, null);
+
+    try testing.expectError(error.MissingPrivateKey, KeyStore.open(a, dir_path, ""));
+}
+
+test "KeyStore.open reports a malformed private key blob" {
+    const a = testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer a.free(dir_path);
+    const malformed_blob = [_]u8{0xff};
+
+    try createTestKey4Db(a, dir_path, &malformed_blob);
+
+    try testing.expectError(error.InvalidPrivateKeyBlob, KeyStore.open(a, dir_path, ""));
 }
 
 test "end-to-end: KeyStore.open decrypts a synthetic key4.db to the known master key" {
