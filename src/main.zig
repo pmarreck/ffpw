@@ -4,6 +4,7 @@ const key4 = @import("key4.zig");
 const login_decrypt = @import("login_decrypt.zig");
 
 var debug_enabled: bool = false;
+const version = "0.1.0";
 
 // Channels exist only so `--channel` can express intent; automatic discovery is
 // deliberately name-agnostic (see `isEligible`), so there is no table of "known"
@@ -93,6 +94,7 @@ const Cli = struct {
     profile: ?[]const u8 = null,
     channel: ?Channel = null,
     show_help: bool = false,
+    show_about: bool = false,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -121,6 +123,11 @@ fn run(
 
     if (cli.show_help) {
         try printUsage(io);
+        return;
+    }
+
+    if (cli.show_about) {
+        try printAbout(io);
         return;
     }
 
@@ -156,6 +163,8 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Cli {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             cli.show_help = true;
+        } else if (std.mem.eql(u8, arg, "--about")) {
+            cli.show_about = true;
         } else if (std.mem.eql(u8, arg, "--profile")) {
             i += 1;
             if (i >= args.len) return error.MissingProfilePath;
@@ -196,22 +205,53 @@ fn printUsage(io: std.Io) !void {
     var out = std.Io.File.stdout().writer(io, &buffer);
     try out.interface.writeAll(
         "Usage: ffpw <filter> [<filter> ...] [--channel <ch>] [--profile <path>]\n" ++
-        "\n" ++
-        "Filters are substring-matched against hostname and username (AND'd).\n" ++
-        "\n" ++
-        "Options:\n" ++
-        "  --host <filter>          Alias for a positional filter\n" ++
-        "  --channel <ch>           Firefox channel: release, beta, nightly, dev, esr\n" ++
-        "  --profile <path>         Firefox profile directory (overrides --channel)\n" ++
-        "  -h, --help               Show this help\n" ++
-        "\n" ++
-        "Environment:\n" ++
-        "  FFPW_CHANNEL             Default channel (e.g. nightly, release)\n" ++
-        "\n" ++
-        "Examples:\n" ++
-        "  ffpw google              All logins with 'google' in hostname or username\n" ++
-        "  ffpw google admin        Logins matching both 'google' AND 'admin'\n" ++
-        "  ffpw github --channel nightly\n",
+            "\n" ++
+            "Filters are substring-matched against hostname and username (AND'd).\n" ++
+            "\n" ++
+            "Options:\n" ++
+            "  --host <filter>          Alias for a positional filter\n" ++
+            "  --channel <ch>           Firefox channel: release, beta, nightly, dev, esr\n" ++
+            "  --profile <path>         Firefox profile directory (overrides --channel)\n" ++
+            "  --about                  Show version and compile target\n" ++
+            "  -h, --help               Show this help\n" ++
+            "\n" ++
+            "Environment:\n" ++
+            "  FFPW_CHANNEL             Default channel (e.g. nightly, release)\n" ++
+            "\n" ++
+            "Examples:\n" ++
+            "  ffpw google              All logins with 'google' in hostname or username\n" ++
+            "  ffpw google admin        Logins matching both 'google' AND 'admin'\n" ++
+            "  ffpw github --channel nightly\n",
+    );
+    try out.interface.flush();
+}
+
+fn platformIdentity(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch, abi: std.Target.Abi) []const u8 {
+    return switch (os) {
+        .linux => switch (arch) {
+            .x86_64 => if (abi.isMusl()) "PF=linux-amd64 VARIANT=musl" else "PF=linux-amd64 VARIANT=gnu",
+            .aarch64 => if (abi.isMusl()) "PF=linux-arm64 VARIANT=musl" else "PF=linux-arm64 VARIANT=gnu",
+            else => "PF=linux-unsupported",
+        },
+        .macos => switch (arch) {
+            .aarch64 => "PF=macos-arm64",
+            else => "PF=macos-unsupported",
+        },
+        .windows => switch (arch) {
+            .x86_64 => "PF=mswin-amd64 VARIANT=gnu",
+            .aarch64 => "PF=mswin-arm64 VARIANT=gnu",
+            else => "PF=mswin-unsupported",
+        },
+        else => "PF=unsupported",
+    };
+}
+
+fn printAbout(io: std.Io) !void {
+    var buffer: [256]u8 = undefined;
+    var out = std.Io.File.stdout().writer(io, &buffer);
+    try out.interface.print(
+        "ffpw {s} — Read local Firefox passwords; {s}\n",
+        .{ version, platformIdentity(builtin.target.os.tag, builtin.target.cpu.arch, builtin.target.abi) },
     );
     try out.interface.flush();
 }
@@ -554,4 +594,28 @@ test "Channel.fromString accepts every advertised channel and rejects junk" {
         try testing.expect(Channel.fromString(name) != null);
     }
     try testing.expect(Channel.fromString("bogus") == null);
+}
+
+test "parseArgs accepts --about without a filter and rejects unknown options" {
+    var about = try parseArgs(testing.allocator, &.{ "ffpw", "--about" });
+    defer cliDeinit(testing.allocator, &about);
+
+    try testing.expect(about.show_about);
+    try testing.expectEqual(@as(usize, 0), about.filter_count);
+    try testing.expectError(error.UnknownArg, parseArgs(testing.allocator, &.{ "ffpw", "--wat" }));
+}
+
+test "platformIdentity uses canonical compile-target names" {
+    try testing.expectEqualStrings(
+        "PF=linux-amd64 VARIANT=musl",
+        platformIdentity(.linux, .x86_64, .musl),
+    );
+    try testing.expectEqualStrings(
+        "PF=linux-arm64 VARIANT=gnu",
+        platformIdentity(.linux, .aarch64, .gnu),
+    );
+    try testing.expectEqualStrings(
+        "PF=macos-arm64",
+        platformIdentity(.macos, .aarch64, .none),
+    );
 }

@@ -32,7 +32,27 @@ else
 	echo "  output: $help_output" >&2
 fi
 
-# Test 2: missing key4.db returns error
+# Test 2: --about identifies the compiled target without searching profiles
+((tests++))
+echo "Testing: --about identifies the compiled target..."
+case "$(uname -s):$(uname -m)" in
+	Linux:x86_64) expected_platform='PF=linux-amd64 VARIANT=musl' ;;
+	Linux:aarch64|Linux:arm64) expected_platform='PF=linux-arm64 VARIANT=musl' ;;
+	Darwin:arm64) expected_platform='PF=macos-arm64' ;;
+	*) expected_platform='PF=' ;;
+esac
+about_output=$(ffpw --about 2>/dev/null)
+about_status=$?
+about_lines=$(printf '%s\n' "$about_output" | wc -l)
+if [[ $about_status -eq 0 && $about_lines -eq 1 && "$about_output" == "ffpw 0.1.0 — Read local Firefox passwords; $expected_platform" ]]; then
+	report_result 1 "--about identifies the compiled target"
+else
+	report_result 0 "--about did not identify the compiled target"
+	echo "  status: $about_status" >&2
+	echo "  output: $about_output" >&2
+fi
+
+# Test 3: missing key4.db returns error
 ((tests++))
 echo "Testing: missing key4.db returns error..."
 work_dir=$(mktemp -d --tmpdir ffpw_test.XXXXXX)
@@ -51,7 +71,7 @@ else
 	echo "  error: $error_output" >&2
 fi
 
-# Test 3: missing logins.json returns error
+# Test 4: missing logins.json returns error
 ((tests++))
 echo "Testing: missing logins.json returns error..."
 rm -f "$profile_dir/logins.json"
@@ -67,7 +87,7 @@ fi
 
 rm -rf "$work_dir"
 
-# Test 4: among several usable profiles, the most recently updated one wins —
+# Test 5: among several usable profiles, the most recently updated one wins —
 # asserted in BOTH directions.
 #
 # Selection must key on real filesystem mtime, not on directory iteration order.

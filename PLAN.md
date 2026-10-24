@@ -2,9 +2,9 @@
 
 Remaining work is ordered by priority. Older completions are in `docs/PLAN_LOG.md`; detailed evidence remains in Git history. Purpose and success criteria live in `INTENT.md`.
 
-## Awaiting owner decision
+## Active
 
-- [ ] Record the `ffpw-i18n-scope` revision 1 decision in `RULES.md`, then add tested `--about` output and preserve nonzero rejection of unknown options.
+- [ ] Show each matching login's password-set and last-used timestamps in safe, readable terminal-table output, keeping ffpw standalone and statically linked on Linux.
 
 ## Follow-ups
 
@@ -15,6 +15,8 @@ Remaining work is ordered by priority. Older completions are in `docs/PLAN_LOG.m
 
 ## Recent completions
 
+- [x] Added tested one-line `--about` output with compile-target identity and preserved nonzero rejection of unknown options. (done 2026-10-23 20:43 EDT; commit pending)
+- [x] Recorded the deferred-internationalization decision from `ffpw-i18n-scope` revision 1 in `RULES.md` and reconciled project intent. (done 2026-10-23 20:15 EDT; commit pending)
 - [x] Added isolated missing-row and malformed-private-key-blob tests and preserved the precise malformed-blob classification after trying every candidate row. (done 2026-10-14 16:18 EDT; commit `15cb737`)
 - [x] Removed the shell alias that forced an implicit Firefox channel while preserving explicit `--channel` behavior. (done 2026-09-06 11:48 EDT; dotfiles commit `99d3362`, recorded here by `16d90fe`)
 - [x] Prevented Nix test builds from replacing the PATH-facing release result. (done 2026-08-28 15:05 EDT; commit `bb31b9e`)
