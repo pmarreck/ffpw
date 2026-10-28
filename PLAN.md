@@ -4,7 +4,7 @@ Remaining work is ordered by priority. Older completions are in `docs/PLAN_LOG.m
 
 ## Active
 
-- [ ] Show each matching login's password-set and last-used timestamps in safe, readable terminal-table output, keeping ffpw standalone and statically linked on Linux.
+- [ ] Show each matching login's password-set and last-used timestamps in a safe table, preserving complete credentials even when the table exceeds terminal width, while keeping ffpw standalone and statically linked on Linux. (implementation green; awaiting visual approval before exact multi-width/color snapshots)
 
 ## Follow-ups
 

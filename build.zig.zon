@@ -9,6 +9,10 @@
             .url = "https://github.com/pmarreck/zig-sqlite/archive/0f5271e40efa3961d5e345a0153c2310cbb506d3.tar.gz",
             .hash = "sqlite-3.48.0-F2R_a2-kDgDvM19xx3e7DI2HswNlObGgB4JwMIImJISU",
         },
+        .tsv_to_ansi_table = .{
+            .url = "https://github.com/pmarreck/tsv_to_ansi_table/archive/aa7cdef0cad4dab6c33a3188ed723faba5436ff1.tar.gz",
+            .hash = "tsv_to_ansi_table-0.1.0-mnR1jtj0AQCQjkZRqNXTG-slLHW-upTNrDD37LIYHY3A",
+        },
     },
     .paths = .{
         "",

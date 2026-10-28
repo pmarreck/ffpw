@@ -8,9 +8,21 @@
       url = "github:mitchellh/zig-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+		table-src = {
+			url = "github:pmarreck/tsv_to_ansi_table/aa7cdef0cad4dab6c33a3188ed723faba5436ff1";
+			flake = false;
+		};
+		utf8proc-src = {
+			url = "github:JuliaStrings/utf8proc/v2.11.3";
+			flake = false;
+		};
+		random-src = {
+			url = "github:pmarreck/random/76ada4a2d6259569f901985b08d8d5ad10f45059";
+			flake = false;
+		};
   };
 
-  outputs = { self, nixpkgs, flake-utils, zig-overlay }:
+  outputs = { self, nixpkgs, flake-utils, zig-overlay, table-src, utf8proc-src, random-src }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -41,6 +53,18 @@
             name = "sqlite-3.48.0-F2R_a2-kDgDvM19xx3e7DI2HswNlObGgB4JwMIImJISU";
             path = zig-sqlite-src;
           }
+			{
+				name = "tsv_to_ansi_table-0.1.0-mnR1jtj0AQCQjkZRqNXTG-slLHW-upTNrDD37LIYHY3A";
+				path = table-src;
+			}
+			{
+				name = "N-V-__8AACywKABFCj0r_Y-jIWsk9ahy10zlk78hjn6S-39g";
+				path = utf8proc-src;
+			}
+			{
+				name = "random-0.4.0-dyRyrJ6FCQA374i2644KvuGmR-iz0ob8pUigAxNVL0WD";
+				path = random-src;
+			}
         ];
 
         # Make the build target EXPLICIT rather than relying on Zig's native

@@ -50,10 +50,30 @@
         "type": "github"
       }
     },
+    "random-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792006237,
+        "narHash": "sha256-ixFWmP1Raenwc93I4FKx8u9mN5SDGBXzHbTB36M7vEI=",
+        "owner": "pmarreck",
+        "repo": "random",
+        "rev": "76ada4a2d6259569f901985b08d8d5ad10f45059",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pmarreck",
+        "repo": "random",
+        "rev": "76ada4a2d6259569f901985b08d8d5ad10f45059",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
+        "random-src": "random-src",
+        "table-src": "table-src",
+        "utf8proc-src": "utf8proc-src",
         "zig-overlay": "zig-overlay"
       }
     },
@@ -85,6 +105,40 @@
       "original": {
         "owner": "nix-systems",
         "repo": "default",
+        "type": "github"
+      }
+    },
+    "table-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792853237,
+        "narHash": "sha256-xXnuTe6tcV5Lzsjqdn8wcW0gpq3VH+H5j1jtvG0WA8Y=",
+        "owner": "pmarreck",
+        "repo": "tsv_to_ansi_table",
+        "rev": "aa7cdef0cad4dab6c33a3188ed723faba5436ff1",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pmarreck",
+        "repo": "tsv_to_ansi_table",
+        "rev": "aa7cdef0cad4dab6c33a3188ed723faba5436ff1",
+        "type": "github"
+      }
+    },
+    "utf8proc-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1767113671,
+        "narHash": "sha256-DF2//R8Oc/+IEJuiG9+rTxQ7nltPcPqdCkzR4T7pUes=",
+        "owner": "JuliaStrings",
+        "repo": "utf8proc",
+        "rev": "e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78",
+        "type": "github"
+      },
+      "original": {
+        "owner": "JuliaStrings",
+        "ref": "v2.11.3",
+        "repo": "utf8proc",
         "type": "github"
       }
     },

@@ -9,6 +9,7 @@ annotate=[
 	docs/PLAN_LOG.md = Retired completed PLAN items
 	docs/plan_context/profile-recency-anomaly.md = Evidence and recurrence trigger for the unresolved profile-selection anomaly
 	mutate = Mutation-testing harness: injects known faults, asserts ./test goes red for each (awk-based literal replace)
+	src/output.zig = Pure credential-table renderer with UTC Firefox timestamps and lossless-width checks
 	test = Full suite runner; Nix checks use --no-link to preserve the release result
 	tests/cli = Bash CLI and PATH-layout regression suites
 	tests/cli/ffpw_test = CLI behavior tests using isolated synthetic Firefox profiles

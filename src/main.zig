@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const key4 = @import("key4.zig");
 const login_decrypt = @import("login_decrypt.zig");
+const output = @import("output.zig");
 
 var debug_enabled: bool = false;
 const version = "0.1.0";
@@ -382,6 +383,89 @@ fn fileExists(io: std.Io, path: []const u8) bool {
     return true;
 }
 
+const DecryptField = *const fn (
+    allocator: std.mem.Allocator,
+    encoded: []const u8,
+    master_key: [32]u8,
+) anyerror![]u8;
+
+const MatchCollection = struct {
+    logins: std.ArrayList(output.Login) = .empty,
+    decrypt_failures: usize = 0,
+
+    fn deinit(self: *MatchCollection, allocator: std.mem.Allocator) void {
+        for (self.logins.items) |login| {
+            allocator.free(login.username);
+            allocator.free(login.password);
+        }
+        self.logins.deinit(allocator);
+    }
+};
+
+fn optionalInteger(obj: std.json.ObjectMap, field: []const u8) ?i64 {
+    const value = obj.get(field) orelse return null;
+    return switch (value) {
+        .integer => |integer| integer,
+        else => null,
+    };
+}
+
+fn collectMatches(
+    allocator: std.mem.Allocator,
+    entries: []const std.json.Value,
+    filters: []const []const u8,
+    master_key: [32]u8,
+    decrypt_field: DecryptField,
+) !MatchCollection {
+    var matches = MatchCollection{};
+    errdefer matches.deinit(allocator);
+
+    for (entries) |entry| {
+        const obj = switch (entry) {
+            .object => |object| object,
+            else => continue,
+        };
+        const hostname = switch (obj.get("hostname") orelse continue) {
+            .string => |value| value,
+            else => continue,
+        };
+        const encrypted_username = switch (obj.get("encryptedUsername") orelse continue) {
+            .string => |value| value,
+            else => continue,
+        };
+        const encrypted_password = switch (obj.get("encryptedPassword") orelse continue) {
+            .string => |value| value,
+            else => continue,
+        };
+
+        const username = decrypt_field(allocator, encrypted_username, master_key) catch {
+            matches.decrypt_failures += 1;
+            continue;
+        };
+        if (!entryMatches(hostname, username, filters)) {
+            allocator.free(username);
+            continue;
+        }
+
+        const password = decrypt_field(allocator, encrypted_password, master_key) catch {
+            allocator.free(username);
+            matches.decrypt_failures += 1;
+            continue;
+        };
+        errdefer allocator.free(username);
+        errdefer allocator.free(password);
+        try matches.logins.append(allocator, .{
+            .hostname = hostname,
+            .username = username,
+            .password = password,
+            .time_password_changed_ms = optionalInteger(obj, "timePasswordChanged"),
+            .time_last_used_ms = optionalInteger(obj, "timeLastUsed"),
+        });
+    }
+
+    return matches;
+}
+
 fn printMatches(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -400,9 +484,6 @@ fn printMatches(
 
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writer(io, &buffer);
-    var matched: usize = 0;
-    var decrypt_failures: usize = 0;
-
     const root = parsed.value;
     const logins_value = switch (root) {
         .object => |obj| obj.get("logins") orelse return error.MissingLoginsArray,
@@ -416,55 +497,27 @@ fn printMatches(
 
     debugPrint("Logins entries: {d}\n", .{logins_array.len});
 
-    for (logins_array) |entry| {
-        const obj = switch (entry) {
-            .object => |o| o,
-            else => continue,
-        };
+    var matches = try collectMatches(
+        allocator,
+        logins_array,
+        filters,
+        master_key,
+        login_decrypt.decryptLoginField,
+    );
+    defer matches.deinit(allocator);
 
-        const hostname_value = obj.get("hostname") orelse continue;
-        const hostname = switch (hostname_value) {
-            .string => |value| value,
-            else => continue,
-        };
-
-        const username_value = obj.get("encryptedUsername") orelse continue;
-        const encrypted_username = switch (username_value) {
-            .string => |value| value,
-            else => continue,
-        };
-
-        const password_value = obj.get("encryptedPassword") orelse continue;
-        const encrypted_password = switch (password_value) {
-            .string => |value| value,
-            else => continue,
-        };
-
-        // Decrypt username (needed for filter matching).
-        const username = login_decrypt.decryptLoginField(allocator, encrypted_username, master_key) catch |err| {
-            debugPrint("Decrypt username failed for {s}: {s}\n", .{ hostname, @errorName(err) });
-            decrypt_failures += 1;
-            continue;
-        };
-        defer allocator.free(username);
-
-        if (!entryMatches(hostname, username, filters)) continue;
-        matched += 1;
-
-        const password = login_decrypt.decryptLoginField(allocator, encrypted_password, master_key) catch |err| {
-            debugPrint("Decrypt password failed for {s}: {s}\n", .{ hostname, @errorName(err) });
-            decrypt_failures += 1;
-            continue;
-        };
-        defer allocator.free(password);
-
-        try out.interface.print("{s}\n\tusername: {s}\n\tpassword: {s}\n\n", .{ hostname, username, password });
-    }
-
-    if (matched == 0) {
+    if (matches.logins.items.len == 0) {
         try out.interface.writeAll("No matching logins found.\n");
+    } else {
+        const rendered = try output.renderLogins(allocator, .{
+            .terminal_width = 80,
+            .color = std.Io.File.stdout().supportsAnsiEscapeCodes(io) catch false,
+            .ascii = false,
+        }, matches.logins.items);
+        defer allocator.free(rendered);
+        try out.interface.writeAll(rendered);
     }
-    debugPrint("Matched: {d}, decrypt failures: {d}\n", .{ matched, decrypt_failures });
+    debugPrint("Matched: {d}, decrypt failures: {d}\n", .{ matches.logins.items.len, matches.decrypt_failures });
     try out.interface.flush();
 }
 
@@ -508,6 +561,7 @@ fn reportError(io: std.Io, err: anyerror) !void {
         error.MissingPrivateKey => try err_writer.interface.writeAll("key4.db missing private key entry.\n"),
         error.InvalidMasterKey, error.InvalidPrivateKeyBlob => try err_writer.interface.writeAll("Failed to extract master key from key4.db.\n"),
         error.DecryptFailed => try err_writer.interface.writeAll("Failed to decrypt login entry.\n"),
+        error.TableTooWide => try err_writer.interface.writeAll("Credential table exceeds the 10,000-column safety limit.\n"),
         else => try err_writer.interface.print("Unexpected error: {s}\n", .{@errorName(err)}),
     }
     try err_writer.interface.flush();
@@ -521,6 +575,7 @@ comptime {
     _ = @import("der.zig");
     _ = @import("key4.zig");
     _ = @import("login_decrypt.zig");
+    _ = @import("output.zig");
 }
 
 // ── Profile-selection tests ──────────────────────────────────────────────
@@ -618,4 +673,43 @@ test "platformIdentity uses canonical compile-target names" {
         "PF=macos-arm64",
         platformIdentity(.macos, .aarch64, .none),
     );
+}
+
+fn fakeDecryptLoginField(
+    allocator: std.mem.Allocator,
+    encoded: []const u8,
+    _: [32]u8,
+) anyerror![]u8 {
+    if (!std.mem.startsWith(u8, encoded, "enc:")) return error.DecryptFailed;
+    return allocator.dupe(u8, encoded[4..]);
+}
+
+test "collectMatches keeps Firefox timestamps on each matching decrypted login" {
+    const json =
+        \\{"logins":[
+        \\  {"hostname":"https://example.com","encryptedUsername":"enc:alice","encryptedPassword":"enc:complete-password","timePasswordChanged":1704067200123,"timeLastUsed":1735689599999},
+        \\  {"hostname":"https://elsewhere.test","encryptedUsername":"enc:bob","encryptedPassword":"enc:other-password","timePasswordChanged":"invalid"}
+        \\]}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+    const values = parsed.value.object.get("logins").?.array.items;
+
+    var matches = try collectMatches(
+        testing.allocator,
+        values,
+        &.{"example"},
+        [_]u8{0} ** 32,
+        fakeDecryptLoginField,
+    );
+    defer matches.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), matches.logins.items.len);
+    const login = matches.logins.items[0];
+    try testing.expectEqualStrings("https://example.com", login.hostname);
+    try testing.expectEqualStrings("alice", login.username);
+    try testing.expectEqualStrings("complete-password", login.password);
+    try testing.expectEqual(@as(?i64, 1_704_067_200_123), login.time_password_changed_ms);
+    try testing.expectEqual(@as(?i64, 1_735_689_599_999), login.time_last_used_ms);
+    try testing.expectEqual(@as(usize, 0), matches.decrypt_failures);
 }

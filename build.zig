@@ -15,6 +15,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const table_dep = b.dependency("tsv_to_ansi_table", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Build sqlite3 as a STATIC library ourselves, instead of using the
     // dependency's hardcoded dynamic build.
@@ -57,6 +61,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     root_module.addImport("sqlite", sqlite_mod);
+    root_module.addImport("table", table_dep.module("tsv_to_ansi_table"));
 
     // Link statically against musl so the artifact carries no interpreter at
     // all. A *dynamically* linked musl binary bakes /lib/ld-musl-x86_64.so.1,
@@ -93,6 +98,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     test_module.addImport("sqlite", sqlite_mod);
+    test_module.addImport("table", table_dep.module("tsv_to_ansi_table"));
 
     const tests = b.addTest(.{
         .root_module = test_module,
