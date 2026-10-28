@@ -128,11 +128,9 @@
           };
         };
 
-        # `checks.test` builds the test binary via the same offline
-        # --system zigPkgCache as `packages.default`, then on Linux re-spawns
-        # it through Nix's actual dynamic linker (Zig 0.16 bakes an FHS
-        # loader path that doesn't exist in the Nix build sandbox). Mirrors
-        # the pattern used in c0/libjxlz.
+        # `checks.test` builds the test binary via the same offline package
+        # cache and explicit target as `packages.default`. Linux checks reject
+        # a dynamic artifact before running the binary directly.
         checks.test = pkgs.stdenv.mkDerivation {
           pname = "ffpw-test";
           version = "0.1.0";
@@ -148,22 +146,21 @@
             # Compile the test binary offline (same zigPkgCache as the package).
             zig build test-compile \
               --system ${zigPkgCache} \
+              ${zigTargetFlag} \
               -Doptimize=Debug \
               --color off
 
             bin="$(find zig-out/test-bins -type f -perm -u+x | head -1)"
             [ -n "$bin" ] || { echo "no test binary produced"; exit 1; }
 
-            # Run the compiled test binary. On Linux, Zig 0.16 bakes an FHS
-            # loader path absent in the sandbox, so re-spawn through Nix's
-            # dynamic linker; macOS runs it directly.
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-            DL="$(cat ${pkgs.stdenv.cc}/nix-support/dynamic-linker)"
-            runout="$("$DL" "$bin" 2>&1)"; rc=$?
+			if readelf -l "$bin" | grep -q INTERP; then
+				echo "META-CONTROL: test binary is dynamic; expected static Linux executable" >&2
+				exit 1
+			fi
             ''}
-            ${pkgs.lib.optionalString (!pkgs.stdenv.isLinux) ''
-            runout="$("$bin" 2>&1)"; rc=$?
-            ''}
+
+			runout="$("$bin" 2>&1)"; rc=$?
             printf '%s\n' "$runout"
 
             # META-CONTROL (MFIC): a green is trustworthy only if the harness
