@@ -4,7 +4,8 @@ Remaining work is ordered by priority. Older completions are in `docs/PLAN_LOG.m
 
 ## Active
 
-- [ ] Show each matching login's password-set and last-used timestamps in a safe table, preserving complete credentials even when the table exceeds terminal width, while keeping ffpw standalone and statically linked on Linux. (implementation green; awaiting visual approval before exact multi-width/color snapshots)
+- [x] Sort matching logins by last-used time descending, placing unknown timestamps last and preserving Firefox source order for ties. (done 2026-10-28 12:20 EDT; commit `d985ced`)
+- [x] Show each matching login's password-set and last-used timestamps in a safe table while keeping ffpw standalone and statically linked on Linux. Answer: preserve complete credentials beyond terminal width; approved the Unicode layout, UTC timestamps, header color, and ASCII fallback. (done 2026-10-28 12:20 EDT; commits `48538a0`, `d985ced`)
 
 ## Follow-ups
 
