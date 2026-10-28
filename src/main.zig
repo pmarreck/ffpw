@@ -463,8 +463,18 @@ fn collectMatches(
             .time_last_used_ms = optionalInteger(obj, "timeLastUsed"),
         });
     }
+    std.sort.block(output.Login, matches.logins.items, {}, lastUsedDescending);
 
     return matches;
+}
+
+fn lastUsedDescending(_: void, left: output.Login, right: output.Login) bool {
+    const left_timestamp = output.normalizeFirefoxTimestamp(left.time_last_used_ms);
+    const right_timestamp = output.normalizeFirefoxTimestamp(right.time_last_used_ms);
+    if (left_timestamp) |left_ms| {
+        return if (right_timestamp) |right_ms| left_ms > right_ms else true;
+    }
+    return false;
 }
 
 fn printMatches(
@@ -754,4 +764,35 @@ test "collectMatches keeps Firefox timestamps on each matching decrypted login" 
     try testing.expectEqual(@as(?i64, 1_704_067_200_123), login.time_password_changed_ms);
     try testing.expectEqual(@as(?i64, 1_735_689_599_999), login.time_last_used_ms);
     try testing.expectEqual(@as(usize, 0), matches.decrypt_failures);
+}
+
+test "collectMatches sorts last-used timestamps descending and keeps unknowns and ties stable" {
+    const json =
+        \\{"logins":[
+        \\  {"hostname":"old","encryptedUsername":"enc:u-old","encryptedPassword":"enc:p","timeLastUsed":1704067200000},
+        \\  {"hostname":"unknown","encryptedUsername":"enc:u-unknown","encryptedPassword":"enc:p"},
+        \\  {"hostname":"newest","encryptedUsername":"enc:u-newest","encryptedPassword":"enc:p","timeLastUsed":1735689599999},
+        \\  {"hostname":"tie-first","encryptedUsername":"enc:u-tie-first","encryptedPassword":"enc:p","timeLastUsed":1720000000000},
+        \\  {"hostname":"invalid","encryptedUsername":"enc:u-invalid","encryptedPassword":"enc:p","timeLastUsed":0},
+        \\  {"hostname":"tie-second","encryptedUsername":"enc:u-tie-second","encryptedPassword":"enc:p","timeLastUsed":1720000000000}
+        \\]}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+    const values = parsed.value.object.get("logins").?.array.items;
+
+    var matches = try collectMatches(
+        testing.allocator,
+        values,
+        &.{},
+        [_]u8{0} ** 32,
+        fakeDecryptLoginField,
+    );
+    defer matches.deinit(testing.allocator);
+
+    const expected = [_][]const u8{ "newest", "tie-first", "tie-second", "old", "unknown", "invalid" };
+    try testing.expectEqual(expected.len, matches.logins.items.len);
+    for (expected, matches.logins.items) |hostname, login| {
+        try testing.expectEqualStrings(hostname, login.hostname);
+    }
 }

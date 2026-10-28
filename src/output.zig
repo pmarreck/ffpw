@@ -21,10 +21,7 @@ pub const RenderOptions = struct {
 };
 
 fn formatTimestamp(allocator: std.mem.Allocator, timestamp_ms: ?i64) ![]u8 {
-    const milliseconds = timestamp_ms orelse return allocator.dupe(u8, "unknown");
-    if (milliseconds <= 0 or milliseconds > maximum_timestamp_ms) {
-        return allocator.dupe(u8, "unknown");
-    }
+    const milliseconds = normalizeFirefoxTimestamp(timestamp_ms) orelse return allocator.dupe(u8, "unknown");
 
     const epoch_seconds = std.time.epoch.EpochSeconds{
         .secs = @intCast(@divTrunc(milliseconds, std.time.ms_per_s)),
@@ -46,6 +43,11 @@ fn formatTimestamp(allocator: std.mem.Allocator, timestamp_ms: ?i64) ![]u8 {
             @as(u10, @intCast(@mod(milliseconds, std.time.ms_per_s))),
         },
     );
+}
+
+pub fn normalizeFirefoxTimestamp(timestamp_ms: ?i64) ?i64 {
+    const milliseconds = timestamp_ms orelse return null;
+    return if (milliseconds > 0 and milliseconds <= maximum_timestamp_ms) milliseconds else null;
 }
 
 pub fn renderLogins(
@@ -127,6 +129,55 @@ test "credential table preserves a password wider than the terminal" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "2024-01-01 00:00:00.123Z") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "2024-12-31 23:59:59.999Z") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "…") == null);
+}
+
+test "approved credential table layout is stable below its lossless content width" {
+    const allocator = std.testing.allocator;
+    const logins = [_]Login{
+        .{
+            .hostname = "https://example.com",
+            .username = "alice",
+            .password = "correct horse battery staple",
+            .time_password_changed_ms = 1_704_067_200_123,
+            .time_last_used_ms = 1_735_689_599_999,
+        },
+        .{
+            .hostname = "https://mail.test",
+            .username = "bob@example.com",
+            .password = "s3cret",
+            .time_password_changed_ms = null,
+            .time_last_used_ms = 1_704_067_200_123,
+        },
+    };
+    const expected =
+        \\┌─────────────────────┬─────────────────┬──────────────────────────────┬──────────────────────────┬──────────────────────────┐
+        \\│ Site                │ Username        │ Password                     │ Set                      │ Last Used                │
+        \\├─────────────────────┼─────────────────┼──────────────────────────────┼──────────────────────────┼──────────────────────────┤
+        \\│ https://example.com │ alice           │ correct horse battery staple │ 2024-01-01 00:00:00.123Z │ 2024-12-31 23:59:59.999Z │
+        \\│ https://mail.test   │ bob@example.com │ s3cret                       │ unknown                  │ 2024-01-01 00:00:00.123Z │
+        \\└─────────────────────┴─────────────────┴──────────────────────────────┴──────────────────────────┴──────────────────────────┘
+        \\
+    ;
+
+    for ([_]usize{ 40, 80 }) |terminal_width| {
+        const rendered = try renderLogins(allocator, .{
+            .terminal_width = terminal_width,
+            .color = false,
+            .ascii = false,
+        }, &logins);
+        defer allocator.free(rendered);
+        try std.testing.expectEqualStrings(expected, rendered);
+    }
+
+    const colored = try renderLogins(allocator, .{
+        .terminal_width = 80,
+        .color = true,
+        .ascii = false,
+    }, &logins);
+    defer allocator.free(colored);
+    try std.testing.expectEqual(@as(usize, column_count), std.mem.count(u8, colored, "\x1b[1;36m"));
+    try std.testing.expectEqual(@as(usize, column_count), std.mem.count(u8, colored, "\x1b[0m"));
+    try std.testing.expect(std.mem.indexOf(u8, colored, "correct horse battery staple") != null);
 }
 
 test "credential table sanitizes terminal controls and renders unknown timestamps" {
