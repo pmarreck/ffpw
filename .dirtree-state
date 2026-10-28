@@ -1,6 +1,7 @@
 # Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
 ver=1.2
 annotate=[
+	.mechatron-prime/targets = Exact Nix package and test attributes built by Mechatron Prime CI
 	INTENT.md = Canonical project purpose, scope, constraints, and success evidence
 	RULES.md = Durable project rules and owner decisions
 	bin = Real PATH-discovered directory; ffpw symlinks to the Nix release result
