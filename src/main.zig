@@ -159,6 +159,7 @@ fn run(
 
 fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Cli {
     var cli = Cli{};
+    errdefer cliDeinit(allocator, &cli);
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -658,6 +659,47 @@ test "parseArgs accepts --about without a filter and rejects unknown options" {
     try testing.expect(about.show_about);
     try testing.expectEqual(@as(usize, 0), about.filter_count);
     try testing.expectError(error.UnknownArg, parseArgs(testing.allocator, &.{ "ffpw", "--wat" }));
+}
+
+test "parseArgs preserves arbitrary explicit profile paths and validates channel values" {
+    var parsed = try parseArgs(testing.allocator, &.{
+        "ffpw",
+        "--profile",
+        "unknown-profile-name",
+        "--channel",
+        "beta",
+        "example",
+    });
+    defer cliDeinit(testing.allocator, &parsed);
+
+    try testing.expectEqualStrings("unknown-profile-name", parsed.profile.?);
+    try testing.expectEqual(Channel.beta, parsed.channel.?);
+    try testing.expectEqual(@as(usize, 1), parsed.filter_count);
+    try testing.expectEqualStrings("example", parsed.filters[0]);
+    try testing.expectError(error.MissingProfilePath, parseArgs(testing.allocator, &.{ "ffpw", "--profile" }));
+    try testing.expectError(error.MissingChannel, parseArgs(testing.allocator, &.{ "ffpw", "--channel" }));
+    try testing.expectError(error.InvalidChannel, parseArgs(testing.allocator, &.{ "ffpw", "--channel", "unknown" }));
+}
+
+test "parseArgs classifies mixed filters and enforces the sixteen-filter boundary" {
+    var mixed = try parseArgs(testing.allocator, &.{ "ffpw", "one", "--host", "two", "three" });
+    defer cliDeinit(testing.allocator, &mixed);
+    try testing.expectEqual(@as(usize, 3), mixed.filter_count);
+    try testing.expectEqualStrings("one", mixed.filters[0]);
+    try testing.expectEqualStrings("two", mixed.filters[1]);
+    try testing.expectEqualStrings("three", mixed.filters[2]);
+
+    var exact_args: [max_filters + 1][]const u8 = undefined;
+    exact_args[0] = "ffpw";
+    @memset(exact_args[1..], "filter");
+    var exact = try parseArgs(testing.allocator, &exact_args);
+    defer cliDeinit(testing.allocator, &exact);
+    try testing.expectEqual(@as(usize, max_filters), exact.filter_count);
+
+    var excess_args: [max_filters + 2][]const u8 = undefined;
+    excess_args[0] = "ffpw";
+    @memset(excess_args[1..], "filter");
+    try testing.expectError(error.TooManyFilters, parseArgs(testing.allocator, &excess_args));
 }
 
 test "platformIdentity uses canonical compile-target names" {

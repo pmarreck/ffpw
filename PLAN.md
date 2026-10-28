@@ -8,12 +8,12 @@ Remaining work is ordered by priority. Older completions are in `docs/PLAN_LOG.m
 
 ## Follow-ups
 
-- [ ] Add focused parser coverage for profile, channel, filter limits, and unknown profile names.
 - [ ] Investigate the profile-recency anomaly only if its warning instrumentation captures a recurrence. (context: docs/plan_context/profile-recency-anomaly.md)
 - [ ] Make PKCS#7 padding validation constant-time if ffpw ever decrypts attacker-supplied ciphertext on demand.
 
 ## Recent completions
 
+- [x] Added focused parser coverage for explicit profile paths, channels, mixed filters, and the 16-filter boundary, fixing cleanup after parse failures. (done 2026-10-27 21:29 EDT)
 - [x] Made the Linux Nix test executable static, rejected dynamic test artifacts, and removed the dynamic-loader relaunch. (done 2026-10-27 21:27 EDT)
 - [x] Added tested one-line `--about` output with compile-target identity and preserved nonzero rejection of unknown options. (done 2026-10-23 20:43 EDT; commit `d6d7952`)
 - [x] Recorded the deferred-internationalization decision from `ffpw-i18n-scope` revision 1 in `RULES.md` and reconciled project intent. (done 2026-10-23 20:15 EDT; commit `d6d7952`)
